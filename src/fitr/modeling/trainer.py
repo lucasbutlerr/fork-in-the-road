@@ -1,0 +1,231 @@
+"""ModelTrainer: config-driven wrapper around xgboost.XGBClassifier for the
+breakout success/failure classifier, plus TrainedModel, the artifact it
+produces (a trained classifier bundled with the metadata needed to use it
+correctly later: which columns it expects, in what order, and how its
+output maps back to SUCCESS/FAILURE).
+
+Label encoding is explicit and controlled here, not left to XGBoost's own
+internal label encoder: SUCCESS -> 1, FAILURE -> 0, always, regardless of
+string sort order or library version behavior. This matters because
+`class 1 = positive class = SUCCESS` is relied on directly by
+predict_proba_success() below and will be relied on again by
+ModelEvaluator and LivePredictor in later steps -- it needs to be a fact
+about this code, not an accident of how a library happens to sort strings.
+
+Class imbalance is handled via scale_pos_weight (XGBoost's mechanism for
+this, since it doesn't have sklearn's class_weight='balanced' string
+option) rather than oversampling, per the project's earlier design
+decision: oversampling would need to fabricate rows in a domain (market
+data) where a fabricated row has no real meaning, whereas scale_pos_weight
+just reweights the loss function using the real data as-is.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import xgboost as xgb
+
+from fitr.config_schemas.model_schema import ModelConfig
+from fitr.labeling.labeler import FAILURE, SUCCESS
+
+logger = logging.getLogger(__name__)
+
+_NON_FEATURE_COLUMNS = {"ticker"}  # date_col and label_col are also excluded, handled separately below
+
+
+@dataclass
+class TrainedModel:
+    model: xgb.XGBClassifier
+    feature_columns: list[str]
+    label_column: str
+    positive_class: str  # always SUCCESS -- kept as a field (not a hardcoded assumption at every call
+    negative_class: str  # site) so callers can label output without importing labeler.py's constants
+    trained_at: pd.Timestamp
+    config: ModelConfig
+
+    def predict_proba_success(self, df: pd.DataFrame) -> np.ndarray:
+        """Returns P(SUCCESS) for each row of df. Reindexes df to
+        feature_columns in the trained order -- raises a clear KeyError-
+        style message (via pandas) if a required column is missing rather
+        than silently misaligning columns, which is a hard-to-debug
+        failure mode for exactly the kind of columns-must-match-training
+        assumption this method relies on."""
+        X = df[self.feature_columns]
+        return self.model.predict_proba(X)[:, 1]
+
+    def save(self, path: str | Path) -> None:
+        """Saves the XGBoost model in its own native format (stable
+        across XGBoost versions, unlike pickling the whole Python object)
+        plus a small JSON sidecar with everything needed to use it
+        correctly later: feature column order, the label encoding
+        convention, and the config that produced it, for provenance."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.model.save_model(str(path))
+
+        meta_path = path.with_suffix(path.suffix + ".meta.json")
+        meta = {
+            "feature_columns": self.feature_columns,
+            "label_column": self.label_column,
+            "positive_class": self.positive_class,
+            "negative_class": self.negative_class,
+            "trained_at": self.trained_at.isoformat(),
+            "config": dict(vars(self.config)),
+        }
+        with meta_path.open("w") as f:
+            json.dump(meta, f, indent=2, default=str)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "TrainedModel":
+        path = Path(path)
+        meta_path = path.with_suffix(path.suffix + ".meta.json")
+        with meta_path.open("r") as f:
+            meta = json.load(f)
+
+        model = xgb.XGBClassifier()
+        model.load_model(str(path))
+
+        return cls(
+            model=model,
+            feature_columns=meta["feature_columns"],
+            label_column=meta["label_column"],
+            positive_class=meta["positive_class"],
+            negative_class=meta["negative_class"],
+            trained_at=pd.Timestamp(meta["trained_at"]),
+            config=ModelConfig.model_validate(meta["config"]),
+        )
+
+
+class ModelTrainer:
+    def __init__(self, config: ModelConfig):
+        self._config = config
+
+    def _resolve_feature_columns(self, df: pd.DataFrame, date_column: str) -> list[str]:
+        if self._config.feature_columns != "auto":
+            missing = set(self._config.feature_columns) - set(df.columns)
+            if missing:
+                raise ValueError(f"feature_columns references column(s) not present in the training data: {sorted(missing)}")
+            return list(self._config.feature_columns)
+        excluded = _NON_FEATURE_COLUMNS | {date_column, self._config.label_column}
+        return [c for c in df.columns if c not in excluded]
+
+    def _encode_labels(self, series: pd.Series) -> pd.Series:
+        encoded = series.map({SUCCESS: 1, FAILURE: 0})
+        if encoded.isna().any():
+            bad = sorted(series[encoded.isna()].unique())
+            raise ValueError(
+                f"Unexpected label value(s) {bad} in column '{self._config.label_column}'; "
+                f"expected only {SUCCESS!r} or {FAILURE!r}."
+            )
+        return encoded.astype(int)
+
+    def _build_classifier(self, scale_pos_weight: float) -> xgb.XGBClassifier:
+        params = dict(
+            n_estimators=self._config.n_estimators,
+            max_depth=self._config.max_depth,
+            learning_rate=self._config.learning_rate,
+            min_child_weight=self._config.min_child_weight,
+            gamma=self._config.gamma,
+            subsample=self._config.subsample,
+            colsample_bytree=self._config.colsample_bytree,
+            colsample_bylevel=self._config.colsample_bylevel,
+            colsample_bynode=self._config.colsample_bynode,
+            reg_alpha=self._config.reg_alpha,
+            reg_lambda=self._config.reg_lambda,
+            max_delta_step=self._config.max_delta_step,
+            scale_pos_weight=scale_pos_weight,
+            grow_policy=self._config.grow_policy,
+            max_leaves=self._config.max_leaves,
+            max_bin=self._config.max_bin,
+            tree_method=self._config.tree_method,
+            booster=self._config.booster,
+            objective=self._config.objective,
+            eval_metric=self._config.eval_metric,
+            n_jobs=self._config.n_jobs,
+            random_state=self._config.random_state,
+            base_score=self._config.base_score,
+            verbosity=self._config.verbosity,
+            missing=float("nan"),  # matches this project's NaN convention throughout -- deliberately
+            # not configurable; every upstream NaN means exactly "insufficient history",
+            # and that should always be XGBoost's missing-value sentinel, never anything else.
+            **self._config.extra_params,
+        )
+        return xgb.XGBClassifier(**params)
+
+    def _resolve_scale_pos_weight(self, y: pd.Series) -> float:
+        if self._config.class_weight_mode != "balanced":
+            return self._config.scale_pos_weight
+        n_pos = int((y == 1).sum())
+        n_neg = int((y == 0).sum())
+        if n_pos == 0 or n_neg == 0:
+            logger.warning(
+                "Training data has only one class present (SUCCESS=%d, FAILURE=%d) -- "
+                "scale_pos_weight left at 1.0 instead of computing a ratio.",
+                n_pos, n_neg,
+            )
+            return 1.0
+        weight = n_neg / n_pos
+        logger.info("class_weight_mode=balanced: SUCCESS=%d, FAILURE=%d -> scale_pos_weight=%.3f", n_pos, n_neg, weight)
+        return weight
+
+    def fit(self, train_df: pd.DataFrame, date_column: str = "date") -> TrainedModel:
+        if train_df.empty:
+            raise ValueError("Cannot fit on an empty training set.")
+
+        feature_columns = self._resolve_feature_columns(train_df, date_column)
+        y_all = self._encode_labels(train_df[self._config.label_column])
+        scale_pos_weight = self._resolve_scale_pos_weight(y_all)
+        classifier = self._build_classifier(scale_pos_weight)
+
+        if self._config.early_stopping_rounds is not None:
+            classifier = self._fit_with_early_stopping(classifier, train_df, feature_columns, y_all, date_column)
+        else:
+            logger.info("Fitting on %d rows, %d features, no early stopping.", len(train_df), len(feature_columns))
+            classifier.fit(train_df[feature_columns], y_all)
+
+        return TrainedModel(
+            model=classifier,
+            feature_columns=feature_columns,
+            label_column=self._config.label_column,
+            positive_class=SUCCESS,
+            negative_class=FAILURE,
+            trained_at=pd.Timestamp.now(),
+            config=self._config,
+        )
+
+    def _fit_with_early_stopping(
+        self, classifier: xgb.XGBClassifier, train_df: pd.DataFrame, feature_columns: list[str],
+        y_all: pd.Series, date_column: str,
+    ) -> xgb.XGBClassifier:
+        sorted_df = train_df.sort_values(date_column)
+        sorted_y = y_all.loc[sorted_df.index]
+        split_idx = int(len(sorted_df) * (1 - self._config.early_stopping_validation_fraction))
+        fit_df, eval_df = sorted_df.iloc[:split_idx], sorted_df.iloc[split_idx:]
+        fit_y, eval_y = sorted_y.iloc[:split_idx], sorted_y.iloc[split_idx:]
+
+        if len(eval_df) < 10 or eval_y.nunique() < 2:
+            logger.warning(
+                "Early-stopping validation slice too small or single-class (%d rows) -- "
+                "fitting on the full training set without early stopping instead.",
+                len(eval_df),
+            )
+            classifier.fit(train_df[feature_columns], y_all)
+            return classifier
+
+        logger.info(
+            "Fitting with early stopping: %d fit rows, %d validation rows (tail %.0f%% by date), patience=%d.",
+            len(fit_df), len(eval_df), self._config.early_stopping_validation_fraction * 100,
+            self._config.early_stopping_rounds,
+        )
+        classifier.set_params(early_stopping_rounds=self._config.early_stopping_rounds)
+        classifier.fit(
+            fit_df[feature_columns], fit_y,
+            eval_set=[(eval_df[feature_columns], eval_y)],
+            verbose=False,
+        )
+        return classifier

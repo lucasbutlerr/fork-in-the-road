@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -19,6 +20,17 @@ from .cache import PriceCache
 logger = logging.getLogger(__name__)
 
 DateLike = str | date | datetime | pd.Timestamp
+
+
+@dataclass
+class ProxyStats:
+    """Cumulative cache/network activity for one YFProxy instance's
+    lifetime -- read by callers like BreakoutScanner to report progress
+    during a long scan without YFProxy needing to know anything about
+    scanning itself."""
+
+    cache_hits: int = 0
+    downloads: int = 0
 
 
 class TickerNotFoundError(Exception):
@@ -56,6 +68,7 @@ class YFProxy:
         self._max_retries = max_retries
         self._backoff_seconds = backoff_seconds
         self._reference_ticker = reference_ticker
+        self.stats = ProxyStats()
 
         calendar_start = _to_ts(date.today()) - pd.DateOffset(years=calendar_lookback_years)
         calendar_df = self.get_history(reference_ticker, calendar_start, _to_ts(date.today()))
@@ -114,15 +127,43 @@ class YFProxy:
 
         if not self._cache.covers(ticker, start_ts, end_ts):
             cached = self._cache.load(ticker)
-            if cached is not None and not cached.empty:
-                fetch_start = min(start_ts, cached.index.min())
-                fetch_end = max(end_ts, cached.index.max())
+            if cached is None or cached.empty:
+                # Nothing cached at all yet -- one full fetch.
+                self.stats.downloads += 1
+                raw = self._download_raw(ticker, start_ts, end_ts)
+                if raw.empty:
+                    raise TickerNotFoundError(f"No data returned for {ticker}")
+                self._cache.merge_and_save(ticker, raw)
             else:
-                fetch_start, fetch_end = start_ts, end_ts
-            raw = self._download_raw(ticker, fetch_start, fetch_end)
-            if raw.empty:
-                raise TickerNotFoundError(f"No data returned for {ticker}")
-            self._cache.merge_and_save(ticker, raw)
+                # Something's already cached, just not enough -- fetch
+                # ONLY the missing head/tail slice(s), not the whole
+                # widened range. This matters a lot in practice: a
+                # scanner walking forward one trading day at a time
+                # requests a trailing N-day window whose end date moves
+                # forward every call, so the naive "not covered ->
+                # refetch everything from scratch" approach would
+                # re-download nearly the same ~500-day window every
+                # single day for every ticker, making the cache almost
+                # useless for exactly the workload it exists to speed up.
+                cached_min, cached_max = cached.index.min(), cached.index.max()
+                if end_ts > cached_max:
+                    self.stats.downloads += 1
+                    tail_start = cached_max + pd.Timedelta(days=1)
+                    raw_tail = self._download_raw(ticker, tail_start, end_ts)
+                    if not raw_tail.empty:
+                        self._cache.merge_and_save(ticker, raw_tail)
+                    # An empty tail is expected/benign here (e.g. the new
+                    # end date is a weekend with no new trading days yet)
+                    # -- NOT a TickerNotFoundError, unlike the first-fetch
+                    # case above where empty really does mean "no data".
+                if start_ts < cached_min:
+                    self.stats.downloads += 1
+                    head_end = cached_min - pd.Timedelta(days=1)
+                    raw_head = self._download_raw(ticker, start_ts, head_end)
+                    if not raw_head.empty:
+                        self._cache.merge_and_save(ticker, raw_head)
+        else:
+            self.stats.cache_hits += 1
 
         full = self._cache.load(ticker)
         window = full.loc[(full.index >= start_ts) & (full.index <= end_ts)]

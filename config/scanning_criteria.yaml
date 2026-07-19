@@ -1,0 +1,144 @@
+# scanning_criteria.yaml -- defines what counts as a "breakout candidate"
+# on a given date.
+#
+# `metrics` are computed once per (ticker, as_of_date) via the same
+# FeatureEngine/indicators.py path as features.yaml -- same FeatureSpec
+# shape, same validation. Keep this list to just what the setups below
+# actually reference; it's deliberately a small subset of the full
+# features.yaml, not a copy of it.
+#
+# `setups` are the actual breakout definitions: named combinations of
+# threshold checks against the metrics above. A ticker is flagged as a
+# candidate if it matches AT LEAST ONE setup (setups are always OR'd
+# together). Within one setup, `logic: AND` (default) requires every
+# condition to pass; `logic: OR` requires just one.
+#
+# The five setups below are meant as reasonable, commonly-referenced
+# starting points, not the final word -- tune thresholds against real data
+# via tools/debug_scanner.py, and add/remove setups freely; nothing else
+# in the pipeline needs to change when this file does.
+
+metrics:
+  - name: dist_from_52w_high
+    function: relative_n_day_high
+    params: {window: 252}
+
+  - name: dist_from_20d_high
+    function: relative_n_day_high
+    params: {window: 20}
+
+  - name: rel_volume
+    function: relative_volume
+    params: {window: 20}
+
+  - name: rsi_14
+    function: rsi
+    params: {}
+
+  - name: bb_width
+    function: bollinger_width
+    params: {}
+
+  - name: return_20d
+    function: n_day_return
+    params: {window: 20}
+
+  - name: dist_from_sma50
+    function: relative_distance_from_ma
+    params: {window: 50, ma_type: sma}
+
+  - name: close_loc
+    function: close_location_value
+    params: {}
+
+  - name: days_since_52w_high
+    function: days_since_high
+    params: {window: 252}
+
+  - name: gap_pct
+    function: close_to_open_gap_pct
+    params: {}
+
+  - name: return_5d
+    function: n_day_return
+    params: {window: 5}
+
+  - name: rsi_slope_5d
+    function: rsi_slope
+    params: {}
+
+setups:
+  - name: classic_high_breakout
+    description: >
+      Price pushing to a new (or near-new) 52-week high on a volume
+      surge, while still holding above its intermediate-term trend. The
+      textbook "flat base" / "cup and handle" breakout -- probably the
+      single most commonly referenced breakout pattern.
+    logic: AND
+    conditions:
+      - {metric: dist_from_52w_high, operator: ">=", value: -0.02}   # within 2% of the 52-week high
+      - {metric: rel_volume, operator: ">=", value: 1.5}              # at least 1.5x average volume
+      - {metric: dist_from_sma50, operator: ">=", value: 0.0}         # holding above the 50-day trend
+      - {metric: rsi_14, operator: between, value: [55, 85]}          # strong momentum, not yet a blow-off top
+
+  - name: volatility_squeeze_breakout
+    description: >
+      A tight consolidation (narrow Bollinger width -- low recent
+      volatility) actively resolving upward right now, with a volume
+      pickup and a strong close. The "coiled spring" setup.
+      NOTE: an earlier version of this setup only checked bb_width plus a
+      mild 20-day return, which caught a lot of ordinary sideways/quietly
+      declining chop rather than genuine squeeze breakouts -- it never
+      confirmed the squeeze was actually resolving upward. dist_from_20d_high
+      and close_loc below are what fix that.
+    logic: AND
+    conditions:
+      - {metric: bb_width, operator: "<=", value: 0.07}          # was unusually tight beforehand
+      - {metric: dist_from_20d_high, operator: ">=", value: -0.02}  # pushing near/at its own recent high NOW
+      - {metric: close_loc, operator: ">=", value: 0.5}           # closed strong, not just green
+      - {metric: rel_volume, operator: ">=", value: 1.5}
+
+  - name: pullback_reclaim
+    description: >
+      Price pulled back modestly from its 20-day high and is genuinely
+      reclaiming it -- rising over the past week, momentum turning back
+      up, still holding its intermediate-term trend. A "buy the dip"
+      continuation rather than a fresh breakout.
+      NOTE: an earlier version of this setup relied on close_loc (today's
+      position within today's own range) and a neutral RSI band, neither
+      of which actually confirms upward movement -- both are equally
+      consistent with a stock rolling over. return_5d, rsi_slope_5d, and
+      dist_from_sma50 below are what fix that.
+    logic: AND
+    conditions:
+      - {metric: dist_from_20d_high, operator: between, value: [-0.04, -0.01]}  # pulled back 1-4% from the 20d high
+      - {metric: return_5d, operator: ">=", value: 0.01}     # genuinely moving up over the past week
+      - {metric: rsi_slope_5d, operator: ">", value: 0.0}    # momentum turning up, not just sitting neutral
+      - {metric: close_loc, operator: ">=", value: 0.5}
+      - {metric: dist_from_sma50, operator: ">=", value: -0.02}  # still near/above intermediate trend
+      - {metric: rel_volume, operator: ">=", value: 1.2}
+
+  - name: fresh_breakout_day
+    description: >
+      Today specifically IS the new 52-week high (not "recently was"),
+      on volume, closing strong. The most literal reading of "a breakout
+      happened today" as opposed to "happened recently and is still
+      extended" -- distinct from classic_high_breakout, which allows up
+      to 2% below the high and says nothing about which day set it.
+    logic: AND
+    conditions:
+      - {metric: days_since_52w_high, operator: "==", value: 0}
+      - {metric: rel_volume, operator: ">=", value: 1.5}
+      - {metric: close_loc, operator: ">=", value: 0.6}
+
+  - name: gap_and_go
+    description: >
+      A strong gap up on volume that holds through the session (closes
+      well above the open, near the day's high) -- a momentum/news-driven
+      breakout day, common around earnings or other catalysts, as
+      distinct from the slower basing patterns above.
+    logic: AND
+    conditions:
+      - {metric: gap_pct, operator: ">=", value: 0.03}
+      - {metric: rel_volume, operator: ">=", value: 2.0}
+      - {metric: close_loc, operator: ">=", value: 0.5}

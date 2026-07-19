@@ -1,0 +1,172 @@
+# features.yaml -- what FeatureEngine computes for each (ticker, as_of_date)
+# candidate. Every indicator function in fitr/features/indicators.py is used
+# at least once below, each with its default parameters except where a
+# window has no sensible default (n_day_return, relative_distance_from_ma,
+# relative_n_day_high/low, relative_volume, volume_zscore, obv_slope,
+# days_since_high, and the benchmark-comparison functions all require an
+# explicit `window`).
+#
+# `benchmarks` names the tickers used by any feature with a `source` or
+# `benchmark` field below. Add more (e.g. a second sector ETF) here and
+# reference the new key the same way.
+benchmarks:
+  market: SPY
+  sector: XLK   # swap for whatever GICS sector ETF matches the tickers you're scanning
+
+features:
+  # ---- Price trend --------------------------------------------------------
+  - name: return_20d
+    function: n_day_return
+    params: {window: 20}
+
+  - name: return_50d
+    function: n_day_return
+    params: {window: 50}
+
+  - name: return_200d
+    function: n_day_return
+    params: {window: 200}
+
+  - name: dist_from_sma20
+    function: relative_distance_from_ma
+    params: {window: 20, ma_type: sma}
+
+  - name: dist_from_sma50
+    function: relative_distance_from_ma
+    params: {window: 50, ma_type: sma}
+
+  - name: dist_from_sma200
+    function: relative_distance_from_ma
+    params: {window: 200, ma_type: sma}
+
+  - name: relative_high_20d
+    function: relative_n_day_high
+    params: {window: 20}
+
+  - name: relative_high_52w
+    function: relative_n_day_high
+    params: {window: 252}
+
+  - name: relative_low_20d
+    function: relative_n_day_low
+    params: {window: 20}
+
+  # ---- Volume ---------------------------------------------------------------
+  - name: relative_volume_20d
+    function: relative_volume
+    params: {window: 20}
+
+  - name: volume_ratio_5d_20d
+    function: volume_ratio_short_long
+    params: {}   # defaults: short_window=5, long_window=20
+
+  - name: volume_zscore_20d
+    function: volume_zscore
+    params: {window: 20}
+
+  - name: obv_slope_20d
+    function: obv_slope
+    params: {window: 20}
+
+  # ---- RSI --------------------------------------------------------------------
+  - name: rsi_14
+    function: rsi
+    params: {}   # default: window=14
+
+  - name: rsi_avg_5d
+    function: rsi_moving_average
+    params: {}   # defaults: rsi_window=14, avg_window=5
+
+  - name: rsi_slope_5d
+    function: rsi_slope
+    params: {}   # defaults: rsi_window=14, slope_window=5
+
+  - name: days_rsi_above_60
+    function: days_rsi_above_threshold
+    params: {}   # defaults: rsi_window=14, threshold=60.0
+
+  - name: rsi_std_10d
+    function: rsi_std
+    params: {}   # defaults: rsi_window=14, std_window=10
+
+  # ---- MACD -------------------------------------------------------------------
+  - name: macd_value
+    function: macd_value
+    params: {}   # defaults: fast=12, slow=26, signal=9
+
+  - name: macd_hist_avg_5d
+    function: macd_histogram_moving_average
+    params: {}   # defaults as above, plus avg_window=5
+
+  - name: macd_hist_slope_5d
+    function: macd_histogram_slope
+    params: {}   # defaults as above, plus slope_window=5
+
+  - name: days_macd_above_signal
+    function: days_macd_above_signal
+    params: {}   # defaults: fast=12, slow=26, signal=9
+
+  - name: macd_std_10d
+    function: macd_std
+    params: {}   # defaults as above, plus std_window=10
+
+  # ---- Volatility and breakout quality -----------------------------------
+  - name: atr_normalized_14
+    function: atr_normalized
+    params: {}   # default: window=14
+
+  - name: return_volatility_20d
+    function: return_volatility
+    params: {}   # default: window=20
+
+  - name: bollinger_width_20d
+    function: bollinger_width
+    params: {}   # defaults: window=20, num_std=2.0
+
+  - name: days_since_high_52w
+    function: days_since_high
+    params: {window: 252}
+
+  - name: close_location_value
+    function: close_location_value
+    params: {}   # no params
+
+  - name: high_low_range_pct
+    function: high_low_range_pct
+    params: {}   # no params
+
+  - name: close_to_open_gap_pct
+    function: close_to_open_gap_pct
+    params: {}   # no params
+
+  - name: consecutive_up_days
+    function: consecutive_up_days
+    params: {}   # defaults: price_col=Close, max_lookback=60
+
+  - name: volume_trend_slope_20d
+    function: volume_trend_slope
+    params: {}   # default: window=20
+
+  # ---- Market and sector context -------------------------------------------
+  # These reuse n_day_return and relative_return_vs_benchmark rather than
+  # needing dedicated functions -- see indicators.py's "Market and sector
+  # context" section docstring for why.
+  - name: market_return_20d
+    function: n_day_return
+    params: {window: 20}
+    source: market
+
+  - name: return_20d_vs_market
+    function: relative_return_vs_benchmark
+    params: {window: 20}
+    benchmark: market
+
+  - name: sector_return_20d
+    function: n_day_return
+    params: {window: 20}
+    source: sector
+
+  - name: return_20d_vs_sector
+    function: relative_return_vs_benchmark
+    params: {window: 20}
+    benchmark: sector

@@ -1,0 +1,63 @@
+# model.yaml -- ModelTrainer configuration. Every XGBoost hyperparameter
+# worth tuning is a named field here; anything else XGBoost accepts can
+# still be set through extra_params (see the bottom of this file and
+# model_schema.py's module docstring for the full explanation).
+#
+# These starting values are reasonable defaults for a small-to-medium
+# tabular dataset with ~36 features, not the result of tuning against real
+# data -- expect to revisit them once real accuracy numbers exist (Step 6).
+
+# ---- tree structure ---------------------------------------------------
+n_estimators: 300
+max_depth: 5
+max_leaves: 0             # 0 = no limit (only relevant with grow_policy: lossguide)
+grow_policy: depthwise
+max_bin: 256
+tree_method: hist
+booster: gbtree
+
+# ---- learning rate / regularization ------------------------------------
+learning_rate: 0.05
+gamma: 0.0
+min_child_weight: 1.0
+max_delta_step: 0.0
+reg_alpha: 0.0
+reg_lambda: 1.0
+
+# ---- sampling -----------------------------------------------------------
+subsample: 0.8
+colsample_bytree: 0.8
+colsample_bylevel: 1.0
+colsample_bynode: 1.0
+
+# ---- class imbalance ------------------------------------------------------
+# "balanced" computes scale_pos_weight from the training data's actual
+# FAILURE/SUCCESS counts at fit time -- the value below is only used if
+# this is set to "none".
+class_weight_mode: balanced
+scale_pos_weight: 1.0
+
+# ---- objective / evaluation -----------------------------------------------
+objective: binary:logistic
+eval_metric: [logloss, auc]
+
+# ---- early stopping ---------------------------------------------------------
+# null = disabled (fit on the full training set with no held-out
+# validation slice). If set, ModelTrainer carves the most recent
+# early_stopping_validation_fraction of train.csv (by date) off as a
+# validation set -- never touches test.csv for this.
+early_stopping_rounds: null
+early_stopping_validation_fraction: 0.15
+
+# ---- reproducibility / runtime ----------------------------------------------
+n_jobs: -1
+random_state: 42
+base_score: null
+verbosity: 1
+
+# ---- which train.csv columns are features -----------------------------------
+feature_columns: auto     # everything except ticker/date/label
+label_column: label
+
+# ---- escape hatch for anything not named above -------------------------------
+extra_params: {}
