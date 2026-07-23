@@ -133,3 +133,25 @@ def test_feature_columns_accepts_auto_or_explicit_list():
     assert ModelConfig.model_validate({"feature_columns": "auto"}).feature_columns == "auto"
     explicit = ModelConfig.model_validate({"feature_columns": ["a", "b", "c"]})
     assert explicit.feature_columns == ["a", "b", "c"]
+
+
+def test_calibration_defaults_to_none():
+    config = ModelConfig.model_validate({})
+    assert config.calibration_method == "none"
+    assert config.calibration_fraction == 0.15
+
+
+def test_calibration_method_accepts_sigmoid_and_isotonic():
+    assert ModelConfig.model_validate({"calibration_method": "sigmoid"}).calibration_method == "sigmoid"
+    assert ModelConfig.model_validate({"calibration_method": "isotonic"}).calibration_method == "isotonic"
+
+
+def test_unknown_calibration_method_rejected():
+    with pytest.raises(ValidationError):
+        ModelConfig.model_validate({"calibration_method": "platt"})
+
+
+@pytest.mark.parametrize("bad_value", [0.0, 1.0, -0.1, 1.1])
+def test_calibration_fraction_out_of_range_rejected(bad_value):
+    with pytest.raises(ValidationError):
+        ModelConfig.model_validate({"calibration_fraction": bad_value})

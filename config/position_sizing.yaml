@@ -1,0 +1,57 @@
+# position_sizing.yaml -- how much of the portfolio to allocate to a given
+# predicted candidate.
+#
+# method:
+#   fixed_fractional -- risk a fixed fraction of equity per trade
+#                        (risk_fraction), sized so a full stop-out loses
+#                        exactly that fraction of equity. Doesn't use the
+#                        model's predicted probability at all -- every
+#                        trade gets the same risk regardless of conviction.
+#
+#   fractional_kelly -- sizes proportional to the model's edge, via the
+#                        classic Kelly formula scaled down by
+#                        kelly_multiplier. Full Kelly (multiplier 1.0) is
+#                        rarely used in practice -- extremely sensitive to
+#                        probability estimation error, large drawdowns even
+#                        with a real edge. REQUIRES a genuinely calibrated
+#                        probability (calibration_method != "none" in
+#                        model.yaml) -- an overconfident raw probability
+#                        recommends an oversized position.
+#
+#                        IMPORTANT on kelly_multiplier's default below:
+#                        the commonly-cited "quarter Kelly" convention
+#                        (0.25) comes from gambling contexts with much
+#                        larger, more symmetric payoffs. For THIS project's
+#                        tight stop (4%) relative to target (8%), the raw
+#                        (full) Kelly fraction is already huge for almost
+#                        any probability with real edge -- e.g. at p=0.5 it
+#                        works out to 625% of equity -- so a 0.25
+#                        multiplier still saturates max_position_fraction
+#                        for nearly every probability above breakeven,
+#                        making position size look constant regardless of
+#                        confidence. 0.01 below keeps the sizing curve
+#                        genuinely differentiated across the practically
+#                        relevant probability range instead of saturating
+#                        almost immediately -- re-tune this if you change
+#                        target_return/stop_loss_return, since the "right"
+#                        multiplier scales with how tight the stop is.
+
+method: fractional_kelly
+
+# ---- fixed_fractional ---------------------------------------------------
+risk_fraction: 0.01          # risk 1% of equity per trade
+
+# ---- fractional_kelly -----------------------------------------------------
+kelly_multiplier: 0.01       # see the note above -- NOT the "textbook" 0.25
+
+# ---- trade economics, used by both methods -------------------------------
+# Should generally match labeling.yaml's target_return/stop_loss_return,
+# since that's what the model was trained to predict -- kept
+# independently configurable in case you want to size for a different
+# planned exit than the label horizon used.
+target_return: 0.08
+stop_loss_return: -0.04
+
+# ---- portfolio-level guardrails, applied regardless of method -----------
+max_position_fraction: 0.10  # never more than 10% of equity in one position
+min_position_fraction: 0.0   # below this recommended size, round down to zero

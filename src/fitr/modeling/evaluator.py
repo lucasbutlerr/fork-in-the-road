@@ -38,8 +38,21 @@ class SetupBreakdown:
     success_count: int
     failure_count: int
     accuracy: float
-    success_accuracy: float | None  # None if this setup had zero actual SUCCESS rows in the test set
-    failure_accuracy: float | None  # None if this setup had zero actual FAILURE rows in the test set
+    success_accuracy: float | None  # recall: of actual SUCCESS rows, fraction correctly caught. None if n_success==0.
+    failure_accuracy: float | None  # recall: of actual FAILURE rows, fraction correctly caught. None if n_failure==0.
+    success_precision: float  # of rows PREDICTED success, fraction that really were -- the number that
+    # actually matters for "are this setup's signals profitable", not success_accuracy/recall. NaN if the
+    # model never predicted SUCCESS for this setup at all (0 predicted positives).
+    failure_precision: float  # same idea, for predicted FAILURE. NaN if never predicted.
+
+
+@dataclass
+class CalibrationBucket:
+    bucket_low: float
+    bucket_high: float
+    n_rows: int
+    mean_predicted_probability: float
+    actual_success_rate: float
 
 
 @dataclass
@@ -54,6 +67,7 @@ class EvaluationReport:
     confusion_matrix: dict[str, int]
     feature_importances: dict[str, float]
     setup_breakdown: dict[str, SetupBreakdown] = field(default_factory=dict)
+    calibration_curve: list[CalibrationBucket] = field(default_factory=list)
 
 
 class ModelEvaluator:
@@ -96,6 +110,7 @@ class ModelEvaluator:
             confusion_matrix=cm,
             feature_importances=self._feature_importances(trained),
             setup_breakdown=self._setup_breakdown(test_df, y_true, y_pred),
+            calibration_curve=self._calibration_curve(probs, y_true.to_numpy()),
         )
 
     @staticmethod
@@ -117,11 +132,7 @@ class ModelEvaluator:
 
     @staticmethod
     def _feature_importances(trained: TrainedModel) -> dict[str, float]:
-        raw = trained.model.feature_importances_
-        if raw is None:
-            return {}
-        pairs = sorted(zip(trained.feature_columns, raw), key=lambda p: p[1], reverse=True)
-        return {name: float(value) for name, value in pairs}
+        return trained.feature_importances()
 
     @staticmethod
     def _setup_breakdown(test_df: pd.DataFrame, y_true: pd.Series, y_pred: np.ndarray) -> dict[str, SetupBreakdown]:
@@ -135,16 +146,82 @@ class ModelEvaluator:
             name = col[len("setup_"):]
             sub_true, sub_pred = y_true_arr[mask], y_pred[mask]
             n_success, n_failure = int((sub_true == 1).sum()), int((sub_true == 0).sum())
+            tp = int(((sub_true == 1) & (sub_pred == 1)).sum())
+            fn = int(((sub_true == 1) & (sub_pred == 0)).sum())
+            fp = int(((sub_true == 0) & (sub_pred == 1)).sum())
+            tn = int(((sub_true == 0) & (sub_pred == 0)).sum())
             breakdown[name] = SetupBreakdown(
                 setup_name=name,
                 n_rows=int(mask.sum()),
                 success_count=n_success,
                 failure_count=n_failure,
                 accuracy=float((sub_true == sub_pred).mean()),
-                success_accuracy=float(((sub_true == 1) & (sub_pred == 1)).sum() / n_success) if n_success > 0 else None,
-                failure_accuracy=float(((sub_true == 0) & (sub_pred == 0)).sum() / n_failure) if n_failure > 0 else None,
+                success_accuracy=float(tp / n_success) if n_success > 0 else None,
+                failure_accuracy=float(tn / n_failure) if n_failure > 0 else None,
+                success_precision=ModelEvaluator._safe_divide(tp, tp + fp),
+                failure_precision=ModelEvaluator._safe_divide(tn, tn + fn),
             )
         return breakdown
+
+    @staticmethod
+    def _calibration_curve(probs: np.ndarray, y_true: np.ndarray, n_buckets: int = 10) -> list[CalibrationBucket]:
+        """Buckets predictions into n_buckets equal-width probability
+        ranges (deciles by default) and compares the mean predicted
+        probability in each bucket to the actual observed success rate --
+        a well-calibrated model should show these two numbers close
+        together in every bucket. This is what confirms calibration
+        actually worked, rather than assuming it did just because
+        calibration_method was set. Empty buckets are skipped rather than
+        reported with misleading NaN/zero stats."""
+        edges = np.linspace(0, 1, n_buckets + 1)
+        buckets = []
+        for i in range(n_buckets):
+            lo, hi = edges[i], edges[i + 1]
+            mask = (probs >= lo) & (probs <= hi) if i == n_buckets - 1 else (probs >= lo) & (probs < hi)
+            if not mask.any():
+                continue
+            buckets.append(
+                CalibrationBucket(
+                    bucket_low=float(lo),
+                    bucket_high=float(hi),
+                    n_rows=int(mask.sum()),
+                    mean_predicted_probability=float(probs[mask].mean()),
+                    actual_success_rate=float(y_true[mask].mean()),
+                )
+            )
+        return buckets
+
+    def predictions_detail(self, trained: TrainedModel, test_df: pd.DataFrame, threshold: float = 0.5) -> pd.DataFrame:
+        """Row-level predictions: every test row's true label, predicted
+        probability, predicted class at the given threshold, and whether
+        the prediction was correct -- sorted by predicted probability,
+        highest first. This is what a trade-tracking tool or spot-check of
+        specific misses would want; evaluate() above only summarizes."""
+        if test_df.empty:
+            raise ValueError("Cannot produce prediction detail on an empty test set.")
+
+        y_true_labels = test_df[trained.label_column]
+        y_true = y_true_labels.map({SUCCESS: 1, FAILURE: 0})
+        if y_true.isna().any():
+            bad = sorted(test_df.loc[y_true.isna(), trained.label_column].unique())
+            raise ValueError(f"Unexpected label value(s) {bad} in column '{trained.label_column}'.")
+
+        probs = trained.predict_proba_success(test_df)
+        predicted_labels = [SUCCESS if p >= threshold else FAILURE for p in probs]
+        correct = [pl == tl for pl, tl in zip(predicted_labels, y_true_labels)]
+
+        detail = pd.DataFrame(
+            {
+                "predicted_probability": probs,
+                "predicted_label": predicted_labels,
+                "true_label": y_true_labels.to_numpy(),
+                "correct": correct,
+            }
+        )
+        id_cols = [c for c in ("ticker", "date") if c in test_df.columns]
+        if id_cols:
+            detail = pd.concat([test_df[id_cols].reset_index(drop=True), detail], axis=1)
+        return detail.sort_values("predicted_probability", ascending=False).reset_index(drop=True)
 
 
 def _fmt_pct(value: float | None) -> str:
@@ -153,7 +230,7 @@ def _fmt_pct(value: float | None) -> str:
     return f"{value:.1%}"
 
 
-def format_evaluation_report(report: EvaluationReport, top_n_features: int = 15) -> str:
+def format_evaluation_report(report: EvaluationReport, top_n_features: int = 15, bottom_n_features: int = 10) -> str:
     """Plain-text rendering of an EvaluationReport, shared by
     scripts/train_model.py (when --test is given) and
     scripts/evaluate_model.py, so both print an identical report rather
@@ -176,18 +253,59 @@ def format_evaluation_report(report: EvaluationReport, top_n_features: int = 15)
     lines.append("")
 
     if report.setup_breakdown:
-        lines.append("Per-setup breakdown:")
+        lines.append(
+            "Per-setup breakdown (base_rate = actual SUCCESS fraction within this setup, independent of the "
+            "model -- a low base_rate is a setup-definition problem; low precision/accuracy despite a "
+            "healthy base_rate is a modeling problem specific to that setup):"
+        )
         for name, sb in sorted(report.setup_breakdown.items()):
+            base_rate = sb.success_count / sb.n_rows if sb.n_rows > 0 else float("nan")
             lines.append(
-                f"  {name:<28} n={sb.n_rows:<5} accuracy={sb.accuracy:.1%}  "
-                f"success_acc={_fmt_pct(sb.success_accuracy)}  failure_acc={_fmt_pct(sb.failure_accuracy)}"
+                f"  {name:<28} n={sb.n_rows:<5} base_rate={base_rate:.1%}  "
+                f"(success={sb.success_count}, failure={sb.failure_count})"
+            )
+            lines.append(
+                f"  {'':<28} accuracy={sb.accuracy:.1%}  "
+                f"success_recall={_fmt_pct(sb.success_accuracy)}  failure_recall={_fmt_pct(sb.failure_accuracy)}  "
+                f"success_precision={_fmt_pct(sb.success_precision)}  failure_precision={_fmt_pct(sb.failure_precision)}"
             )
         lines.append("")
 
     if report.feature_importances:
-        shown = min(top_n_features, len(report.feature_importances))
+        items = list(report.feature_importances.items())
+        shown = min(top_n_features, len(items))
         lines.append(f"Top {shown} feature importances:")
-        for name, value in list(report.feature_importances.items())[:top_n_features]:
+        for name, value in items[:top_n_features]:
             lines.append(f"  {name:<32} {value:.4f}")
+        lines.append("")
+
+        # Least-important features -- useful when deciding what to prune
+        # from features.yaml. Only shown as a distinct bottom section (not
+        # just "scroll to the end of the full list") when there's enough
+        # daylight between top and bottom that they wouldn't already
+        # overlap in a single top-N listing.
+        remaining = items[top_n_features:]
+        if remaining:
+            shown_bottom = min(bottom_n_features, len(remaining))
+            lines.append(f"Bottom {shown_bottom} feature importances (candidates for pruning from features.yaml):")
+            for name, value in remaining[-bottom_n_features:]:
+                lines.append(f"  {name:<32} {value:.4f}")
+
+    if report.calibration_curve:
+        lines.append(
+            "Calibration (mean predicted probability vs. actual success rate per bucket -- a "
+            "well-calibrated model shows these close together; a large gap means the raw probability "
+            "value shouldn't be trusted directly, e.g. for position sizing, even if ranking/threshold "
+            "decisions using it are still fine):"
+        )
+        lines.append(f"  {'bucket':<12}{'n':>6}{'mean predicted':>17}{'actual rate':>15}{'gap':>9}")
+        for b in report.calibration_curve:
+            gap = b.mean_predicted_probability - b.actual_success_rate
+            bucket_label = f"[{b.bucket_low:.0%}-{b.bucket_high:.0%})"
+            lines.append(
+                f"  {bucket_label:<12}{b.n_rows:>6}{b.mean_predicted_probability:>17.1%}"
+                f"{b.actual_success_rate:>15.1%}{gap:>+9.1%}"
+            )
+        lines.append("")
 
     return "\n".join(lines)

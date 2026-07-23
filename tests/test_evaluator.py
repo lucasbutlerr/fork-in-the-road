@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from fitr.modeling.evaluator import ModelEvaluator
+from fitr.modeling.evaluator import ModelEvaluator, format_evaluation_report
 
 
 class _FakeModel:
@@ -21,7 +21,7 @@ class _FakeModel:
 class FakeTrainedModel:
     """Stands in for a real TrainedModel: same interface ModelEvaluator
     actually uses (label_column, feature_columns, predict_proba_success,
-    model.feature_importances_), but with fully controlled, known output."""
+    feature_importances()), but with fully controlled, known output."""
 
     def __init__(self, probs, label_column="label", feature_columns=None, importances=None):
         self._probs = np.array(probs, dtype=float)
@@ -31,6 +31,16 @@ class FakeTrainedModel:
 
     def predict_proba_success(self, df):
         return self._probs
+
+    def feature_importances(self):
+        # Mirrors TrainedModel.feature_importances()'s real contract, now
+        # that ModelEvaluator delegates to it instead of reaching into
+        # .model.feature_importances_ directly.
+        raw = self.model.feature_importances_
+        if raw is None or len(raw) == 0:
+            return {}
+        pairs = sorted(zip(self.feature_columns, raw), key=lambda p: p[1], reverse=True)
+        return {name: float(value) for name, value in pairs}
 
 
 def test_perfect_predictions_give_accuracy_one_everywhere():
@@ -186,3 +196,78 @@ def test_setup_with_zero_matching_rows_excluded_from_breakdown():
     model = FakeTrainedModel(probs=[0.9, 0.1])
     report = ModelEvaluator().evaluate(model, df)
     assert "never_matches" not in report.setup_breakdown
+
+
+def test_setup_precision_matches_hand_computed_values():
+    # setup_A rows: true=[S,S,F,F], pred at 0.5=[S,F,S,F] (probs 0.9,0.3,0.6,0.2)
+    # TP=1 (row0), FN=1 (row1), FP=1 (row2), TN=1 (row3)
+    # success_precision = TP/(TP+FP) = 1/2 = 0.5
+    # failure_precision = TN/(TN+FN) = 1/2 = 0.5
+    df = pd.DataFrame({"label": ["SUCCESS", "SUCCESS", "FAILURE", "FAILURE"], "setup_A": [True] * 4})
+    model = FakeTrainedModel(probs=[0.9, 0.3, 0.6, 0.2])
+    report = ModelEvaluator().evaluate(model, df)
+    sb = report.setup_breakdown["A"]
+    assert sb.success_precision == pytest.approx(0.5)
+    assert sb.failure_precision == pytest.approx(0.5)
+
+
+def test_setup_precision_is_nan_when_setup_never_predicted_that_class():
+    # Model predicts FAILURE for every row in this setup (all probs < 0.5)
+    # -> zero predicted-SUCCESS rows -> success_precision is NaN (0/0), not 0.0.
+    df = pd.DataFrame({"label": ["SUCCESS", "FAILURE", "FAILURE"], "setup_A": [True] * 3})
+    model = FakeTrainedModel(probs=[0.2, 0.1, 0.3])
+    report = ModelEvaluator().evaluate(model, df)
+    sb = report.setup_breakdown["A"]
+    assert sb.success_precision != sb.success_precision  # NaN
+    assert sb.failure_precision == pytest.approx(2 / 3)  # well-defined: 2 correct out of 3 predicted-failure
+
+
+def test_calibration_curve_buckets_account_for_every_row():
+    df = pd.DataFrame({"label": ["SUCCESS", "FAILURE", "SUCCESS", "FAILURE", "SUCCESS"]})
+    model = FakeTrainedModel(probs=[0.05, 0.15, 0.55, 0.65, 0.95])
+    report = ModelEvaluator().evaluate(model, df)
+    assert sum(b.n_rows for b in report.calibration_curve) == len(df)
+
+
+def test_calibration_curve_bucket_contents_match_hand_computed_values():
+    # Two rows both land in the [50%-60%) decile: probs 0.52 and 0.58.
+    # mean predicted = 0.55; true labels [SUCCESS, FAILURE] -> actual rate 0.5.
+    df = pd.DataFrame({"label": ["SUCCESS", "FAILURE", "SUCCESS"]})
+    model = FakeTrainedModel(probs=[0.52, 0.58, 0.05])
+    report = ModelEvaluator().evaluate(model, df)
+    bucket = next(b for b in report.calibration_curve if b.bucket_low == pytest.approx(0.5))
+    assert bucket.n_rows == 2
+    assert bucket.mean_predicted_probability == pytest.approx(0.55)
+    assert bucket.actual_success_rate == pytest.approx(0.5)
+
+
+def test_perfectly_calibrated_predictions_show_zero_gap():
+    # 10 rows all predicted exactly 0.5, exactly half of them SUCCESS ->
+    # mean predicted (0.5) should equal actual rate (0.5) exactly.
+    df = pd.DataFrame({"label": ["SUCCESS"] * 5 + ["FAILURE"] * 5})
+    model = FakeTrainedModel(probs=[0.5] * 10)
+    report = ModelEvaluator().evaluate(model, df)
+    assert len(report.calibration_curve) == 1
+    bucket = report.calibration_curve[0]
+    assert bucket.mean_predicted_probability == pytest.approx(bucket.actual_success_rate)
+
+
+def test_format_report_includes_base_rate_and_precision_and_bottom_features():
+    df = pd.DataFrame(
+        {
+            "label": ["SUCCESS", "SUCCESS", "FAILURE", "FAILURE"],
+            "setup_A": [True, True, True, False],
+        }
+    )
+    model = FakeTrainedModel(
+        probs=[0.9, 0.3, 0.2, 0.6],
+        feature_columns=["feat_a", "feat_b", "feat_c"],
+        importances=[0.7, 0.2, 0.1],
+    )
+    report = ModelEvaluator().evaluate(model, df)
+    text = format_evaluation_report(report, top_n_features=1, bottom_n_features=1)
+
+    assert "base_rate=" in text
+    assert "success_precision=" in text and "failure_precision=" in text
+    assert "Bottom 1 feature importances" in text
+    assert "feat_c" in text  # the least important feature, per the importances given above

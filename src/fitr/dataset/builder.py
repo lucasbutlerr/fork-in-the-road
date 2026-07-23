@@ -27,6 +27,20 @@ IS created only records whichever setup(s) matched on the day it was
 actually created, not any later day's matches during the cooldown window.
 
 Defaults to a 5-trading-day (one calendar week) cooldown.
+
+Each output row carries `trigger_reason` and `forward_return` alongside
+the binary `label` -- richer detail from LabelResult that a binary
+SUCCESS/FAILURE column alone discards. Nothing in the current pipeline
+reads these yet (ModelTrainer still only reads `label`), but they're what
+makes computing *actual* realized returns possible later (position
+sizing, return-aware backtesting) instead of only ever assuming a
+worst-case fixed stop-loss for every failure. IMPORTANT: `forward_return`
+directly encodes the outcome being predicted -- ModelTrainer's "auto"
+feature-column resolution explicitly excludes both new columns for
+exactly this reason (see trainer.py's _NON_FEATURE_COLUMNS). If you ever
+hand-build a feature_columns list instead of using "auto", exclude both
+yourself too, or the model will trivially "predict" success by reading
+off its own future answer.
 """
 from __future__ import annotations
 
@@ -108,6 +122,8 @@ class DatasetBuilder:
                 for name in setup_names:
                     row[f"setup_{name}"] = name in result.matched_setups
                 row["label"] = label_result.outcome
+                row["trigger_reason"] = label_result.trigger_reason
+                row["forward_return"] = label_result.forward_return
                 rows.append(row)
 
                 if label_result.outcome == SUCCESS:
@@ -116,7 +132,11 @@ class DatasetBuilder:
                     stats.failure_count += 1
 
             if logger.isEnabledFor(logging.INFO) and ((day_index + 1) % 20 == 0 or day_index == len(trading_days) - 1):
-                logger.info("Scanned %d/%d trading days -- %d rows so far", day_index + 1, len(trading_days), len(rows))
+                logger.info(
+                    "Day %d/%d (%s) -- %d rows so far (cache hits: %d, downloaded: %d)",
+                    day_index + 1, len(trading_days), pd.Timestamp(day).date(), len(rows),
+                    self._proxy.stats.cache_hits, self._proxy.stats.downloads,
+                )
 
         stats.rows_written = len(rows)
         self.last_build_stats = stats

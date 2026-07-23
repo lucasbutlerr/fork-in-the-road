@@ -49,6 +49,16 @@ eval_metric: [logloss, auc]
 early_stopping_rounds: null
 early_stopping_validation_fraction: 0.15
 
+# ---- probability calibration -------------------------------------------------
+# "none" = disabled (raw XGBoost probabilities, fine for anything
+# threshold/ranking-based -- scan_live.py's ranking, evaluate_model.py's
+# confusion matrix). Only matters once something uses the probability
+# VALUE directly, like position sizing. "sigmoid" (Platt scaling) needs
+# less data; "isotonic" is more flexible but wants a few thousand+ rows in
+# the calibration slice to avoid overfitting.
+calibration_method: sigmoid
+calibration_fraction: 0.15
+
 # ---- reproducibility / runtime ----------------------------------------------
 n_jobs: -1
 random_state: 42

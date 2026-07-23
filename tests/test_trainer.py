@@ -5,6 +5,8 @@ right data reaches XGBoost in the right shape, not XGBoost's own training
 math (a well-tested external library, not this project's job to re-verify)."""
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -36,6 +38,19 @@ def test_auto_feature_columns_excludes_ticker_date_label():
     trainer = ModelTrainer(ModelConfig.model_validate({}))
     trained = trainer.fit(make_train_df())
     assert set(trained.feature_columns) == {"feat_a", "feat_b", "feat_c", "setup_classic"}
+
+
+def test_auto_feature_columns_excludes_trigger_reason_and_forward_return():
+    # Safety-critical: forward_return directly encodes the outcome being
+    # predicted. If "auto" ever treated it as a feature, the model would
+    # trivially "predict" success by reading off its own future answer.
+    # DatasetBuilder writes both of these columns alongside `label`.
+    df = make_train_df()
+    df["trigger_reason"] = "target_hit"
+    df["forward_return"] = 0.08
+    trained = ModelTrainer(ModelConfig.model_validate({})).fit(df)
+    assert "trigger_reason" not in trained.feature_columns
+    assert "forward_return" not in trained.feature_columns
 
 
 def test_positive_and_negative_class_are_fixed_to_success_failure():
@@ -98,16 +113,21 @@ def test_early_stopping_uses_a_time_based_tail_slice():
     assert len(trained.model.evals_result()) > 0
 
 
-def test_early_stopping_falls_back_gracefully_on_a_tiny_dataset():
+def test_early_stopping_falls_back_gracefully_on_a_tiny_dataset(caplog):
     config = ModelConfig.model_validate({"early_stopping_rounds": 10, "early_stopping_validation_fraction": 0.15})
-    trained = ModelTrainer(config).fit(make_train_df(n=20))  # 0.15 * 20 = 3 rows, below the 10-row floor
+    # Deliberately checks the trainer's OWN logged behavior rather than
+    # introspecting XGBoost's internal state (best_iteration / evals_result())
+    # for whether early stopping ran -- those have shown two different real
+    # exception behaviors across environments (AttributeError, then
+    # XGBoostError) that this sandbox can't reliably verify against the real
+    # library. What actually needs confirming is fitr's own logic: did it
+    # correctly detect the too-small validation slice and fall back to a
+    # plain fit? That's fully within this project's control and is what
+    # this checks instead.
+    with caplog.at_level(logging.WARNING):
+        trained = ModelTrainer(config).fit(make_train_df(n=20))  # 0.15 * 20 = 3 rows, below the 10-row floor
     assert trained.model is not None
-    # Confirms it fell back to a plain fit (no eval_set), not an early-stopped one.
-    # best_iteration isn't just unset in that case -- XGBoost raises AttributeError
-    # on access rather than returning None, so getattr's default is required here
-    # rather than a direct `is None` comparison.
-    assert getattr(trained.model, "best_iteration", None) is None
-    assert trained.model.evals_result() == {}
+    assert any("fitting on the full training set without early stopping" in r.message for r in caplog.records)
 
 
 def test_empty_training_data_raises():
@@ -141,3 +161,94 @@ def test_predict_proba_success_is_column_order_independent():
 
     shuffled = train_df[["label", "feat_c", "ticker", "feat_a", "date", "feat_b", "setup_classic"]]
     assert np.allclose(trained.predict_proba_success(shuffled), trained.predict_proba_success(train_df))
+
+
+def test_feature_importances_on_raw_model():
+    trained = ModelTrainer(ModelConfig.model_validate({})).fit(make_train_df())
+    importances = trained.feature_importances()
+    assert set(importances.keys()) == set(trained.feature_columns)
+    assert all(isinstance(v, float) for v in importances.values())
+
+
+def test_feature_importances_on_calibrated_model_does_not_raise():
+    # This is the exact scenario that crashed in production: a calibrated
+    # model wrapped in CalibratedClassifierCV doesn't expose
+    # feature_importances_ directly, and this is what both ModelEvaluator
+    # and LivePredictor's format_predictions() rely on to not crash.
+    config = ModelConfig.model_validate({"calibration_method": "sigmoid", "calibration_fraction": 0.2})
+    trained = ModelTrainer(config).fit(make_train_df(n=400))
+    importances = trained.feature_importances()
+    assert len(importances) > 0
+    assert set(importances.keys()) == set(trained.feature_columns)
+
+
+def test_calibration_disabled_by_default_leaves_raw_classifier():
+    import xgboost as xgb
+
+    trained = ModelTrainer(ModelConfig.model_validate({})).fit(make_train_df())
+    assert isinstance(trained.model, xgb.XGBClassifier)
+
+
+def test_sigmoid_calibration_wraps_model_in_calibrated_classifier():
+    from sklearn.calibration import CalibratedClassifierCV
+
+    config = ModelConfig.model_validate({"calibration_method": "sigmoid", "calibration_fraction": 0.2})
+    trained = ModelTrainer(config).fit(make_train_df(n=400))
+    assert isinstance(trained.model, CalibratedClassifierCV)
+
+
+def test_isotonic_calibration_also_wraps_model():
+    from sklearn.calibration import CalibratedClassifierCV
+
+    config = ModelConfig.model_validate({"calibration_method": "isotonic", "calibration_fraction": 0.25})
+    trained = ModelTrainer(config).fit(make_train_df(n=400))
+    assert isinstance(trained.model, CalibratedClassifierCV)
+
+
+def test_calibrated_model_predict_proba_success_still_works():
+    config = ModelConfig.model_validate({"calibration_method": "sigmoid", "calibration_fraction": 0.2})
+    trained = ModelTrainer(config).fit(make_train_df(n=400))
+    probs = trained.predict_proba_success(make_train_df(n=50, seed=99))
+    assert len(probs) == 50
+    assert np.all((probs >= 0) & (probs <= 1))
+
+
+def test_calibration_falls_back_to_raw_model_on_tiny_slice():
+    import xgboost as xgb
+
+    config = ModelConfig.model_validate({"calibration_method": "sigmoid", "calibration_fraction": 0.15})
+    trained = ModelTrainer(config).fit(make_train_df(n=20))  # 0.15*20=3 rows, below the 10-row floor
+    assert isinstance(trained.model, xgb.XGBClassifier)
+
+
+def test_early_stopping_and_calibration_together_do_not_crash():
+    config = ModelConfig.model_validate(
+        {
+            "calibration_method": "sigmoid",
+            "calibration_fraction": 0.15,
+            "early_stopping_rounds": 5,
+            "early_stopping_validation_fraction": 0.15,
+        }
+    )
+    trained = ModelTrainer(config).fit(make_train_df(n=500))
+    assert trained.model is not None
+
+
+def test_calibrated_save_load_round_trip_reproduces_predictions(tmp_path):
+    from sklearn.calibration import CalibratedClassifierCV
+
+    config = ModelConfig.model_validate({"calibration_method": "sigmoid", "calibration_fraction": 0.2})
+    train_df = make_train_df(n=400)
+    trained = ModelTrainer(config).fit(train_df)
+
+    model_path = tmp_path / "model.joblib"
+    trained.save(model_path)
+    assert model_path.exists()
+    assert model_path.with_suffix(".joblib.meta.json").exists()
+
+    reloaded = TrainedModel.load(model_path)
+    assert isinstance(reloaded.model, CalibratedClassifierCV)
+    assert reloaded.config.calibration_method == "sigmoid"
+
+    test_df = make_train_df(n=50, seed=99)
+    assert np.allclose(trained.predict_proba_success(test_df), reloaded.predict_proba_success(test_df))

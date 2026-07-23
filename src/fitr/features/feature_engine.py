@@ -44,6 +44,15 @@ class FeatureEngine:
         start = as_of - pd.Timedelta(days=self._history_buffer_days)
         return self._proxy.get_history(ticker, start, as_of)
 
+    @property
+    def feature_names(self) -> list[str]:
+        """All configured feature names, in config order -- used by
+        LivePredictor to validate a loaded model's expected columns
+        against the currently configured features.yaml before making any
+        predictions, the same way BreakoutScanner.setup_names is used to
+        build stable one-hot columns."""
+        return [spec.name for spec in self._config.features]
+
     def compute(self, ticker: str, as_of_date) -> dict[str, float]:
         """Returns {feature_name: value} for every feature in the config.
 

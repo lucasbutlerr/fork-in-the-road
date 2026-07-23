@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
 import pandas as pd
 
@@ -36,6 +37,11 @@ def main() -> None:
     parser.add_argument("--train", required=True, help="Path to train.csv (Step 4's DatasetBuilder output)")
     parser.add_argument("--test", default=None, help="Optional path to test.csv -- if given, evaluates immediately after training")
     parser.add_argument("--threshold", type=float, default=0.5, help="Decision threshold for the evaluation report (default 0.5)")
+    parser.add_argument(
+        "--predictions-output",
+        default="data/evaluations/predictions.csv",
+        help="Only used with --test. Where to write row-level predictions. Pass '' to skip.",
+    )
     parser.add_argument("--model-config", default="config/model.yaml")
     parser.add_argument("--output-dir", default="data/models")
     parser.add_argument("--model-name", default=None, help="Base filename (default: model_<timestamp>)")
@@ -71,6 +77,11 @@ def main() -> None:
             f"Early stopping: {model_config.early_stopping_rounds} rounds patience, "
             f"{model_config.early_stopping_validation_fraction:.0%} validation tail"
         )
+    if model_config.calibration_method != "none":
+        print(
+            f"Calibration: {model_config.calibration_method}, "
+            f"{model_config.calibration_fraction:.0%} held-out tail"
+        )
 
     trainer = ModelTrainer(model_config)
     print("\nTraining...\n")
@@ -79,7 +90,7 @@ def main() -> None:
     print(f"\nTrained on {len(trained.feature_columns)} features: {trained.feature_columns}")
 
     model_name = args.model_name or f"model_{trained.trained_at.strftime('%Y%m%d_%H%M%S')}"
-    model_path = f"{args.output_dir}/{model_name}.json"
+    model_path = f"{args.output_dir}/{model_name}.joblib"
     trained.save(model_path)
     print(f"\nWrote {model_path}")
     print(f"Wrote {model_path}.meta.json")
@@ -99,9 +110,17 @@ def main() -> None:
         return
 
     print(f"\n{'=' * 60}\nEvaluating on {args.test}\n{'=' * 60}\n")
-    report = ModelEvaluator().evaluate(trained, test_df, threshold=args.threshold)
+    evaluator = ModelEvaluator()
+    report = evaluator.evaluate(trained, test_df, threshold=args.threshold)
     print(format_evaluation_report(report))
     print()
+
+    if args.predictions_output:
+        detail = evaluator.predictions_detail(trained, test_df, threshold=args.threshold)
+        out_path = Path(args.predictions_output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        detail.to_csv(out_path, index=False)
+        print(f"Wrote {len(detail)} row-level predictions to {out_path}\n")
 
 
 if __name__ == "__main__":

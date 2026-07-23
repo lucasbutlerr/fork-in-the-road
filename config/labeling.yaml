@@ -19,7 +19,7 @@
 # conservatively assumes the stop was hit first (labels it a FAILURE)
 # rather than risk overstating the success rate -- see labeler.py.
 
-horizon_trading_days: 10
+horizon_trading_days: 15
 target_return: 0.08
 stop_loss_return: -0.04
 evaluation_method: first_touch

@@ -18,6 +18,20 @@ option) rather than oversampling, per the project's earlier design
 decision: oversampling would need to fabricate rows in a domain (market
 data) where a fabricated row has no real meaning, whereas scale_pos_weight
 just reweights the loss function using the real data as-is.
+
+Persistence note: TrainedModel.save()/load() use joblib rather than
+XGBoost's own native save_model()/load_model() format, as of calibration
+support being added. That's a deliberate change, not an oversight --
+CalibratedClassifierCV (a scikit-learn meta-estimator wrapping XGBoost)
+doesn't support XGBoost's native format at all, and hand-rolling custom
+serialization for its internals would be fragile across scikit-learn
+versions. joblib is scikit-learn's own recommended way to persist any
+fitted sklearn-API estimator (including third-party ones like XGBoost's
+classifier) and handles the raw and calibrated cases identically. The
+tradeoff: artifact portability is now tied to the combination of XGBoost +
+scikit-learn versions used when saving, not just XGBoost's version alone
+-- pin both in your environment if long-term portability across library
+upgrades matters to you.
 """
 from __future__ import annotations
 
@@ -26,21 +40,36 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 
 from fitr.config_schemas.model_schema import ModelConfig
 from fitr.labeling.labeler import FAILURE, SUCCESS
 
 logger = logging.getLogger(__name__)
 
-_NON_FEATURE_COLUMNS = {"ticker"}  # date_col and label_col are also excluded, handled separately below
+_NON_FEATURE_COLUMNS = {
+    "ticker",
+    # trigger_reason and forward_return are DatasetBuilder metadata about
+    # HOW a row was labeled (added for future return-aware analysis), not
+    # predictive inputs -- forward_return in particular directly encodes
+    # the outcome being predicted, so including it as a feature would be
+    # severe label leakage (the model would trivially "predict" success
+    # by reading off its own future answer). date_col and label_col are
+    # also excluded, handled separately below since their column names
+    # are configurable.
+    "trigger_reason",
+    "forward_return",
+}
 
 
 @dataclass
 class TrainedModel:
-    model: xgb.XGBClassifier
+    model: xgb.XGBClassifier | CalibratedClassifierCV  # calibrated iff calibration_method != "none"
     feature_columns: list[str]
     label_column: str
     positive_class: str  # always SUCCESS -- kept as a field (not a hardcoded assumption at every call
@@ -58,15 +87,45 @@ class TrainedModel:
         X = df[self.feature_columns]
         return self.model.predict_proba(X)[:, 1]
 
+    def feature_importances(self) -> dict[str, float]:
+        """Feature importances as {feature_name: importance}, sorted
+        descending. The single source of truth for this across the
+        project (ModelEvaluator and LivePredictor both call this rather
+        than each having their own copy of the same fallback logic --
+        that duplication is exactly how format_predictions() in
+        predictor.py ended up with an unguarded feature_importances_
+        access that a raw XGBClassifier survives but a calibrated model
+        doesn't).
+
+        Handles both a raw XGBClassifier and a CalibratedClassifierCV-
+        wrapped one transparently: CalibratedClassifierCV doesn't expose
+        feature_importances_ directly, so this reaches into the underlying
+        frozen base estimator instead. Verified this exact attribute path
+        (calibrated_classifiers_[0].estimator) against the real
+        scikit-learn CalibratedClassifierCV/FrozenEstimator, but it's
+        still reaching into another library's internals, so this falls
+        back to an empty dict (never raises) if a future scikit-learn
+        version changes that structure."""
+        raw = getattr(self.model, "feature_importances_", None)
+        if raw is None:
+            try:
+                raw = self.model.calibrated_classifiers_[0].estimator.feature_importances_
+            except (AttributeError, IndexError):
+                return {}
+        if raw is None:
+            return {}
+        pairs = sorted(zip(self.feature_columns, raw), key=lambda p: p[1], reverse=True)
+        return {name: float(value) for name, value in pairs}
+
     def save(self, path: str | Path) -> None:
-        """Saves the XGBoost model in its own native format (stable
-        across XGBoost versions, unlike pickling the whole Python object)
-        plus a small JSON sidecar with everything needed to use it
-        correctly later: feature column order, the label encoding
-        convention, and the config that produced it, for provenance."""
+        """Saves the fitted model via joblib (see module docstring for why
+        this isn't XGBoost's native format anymore) plus a small JSON
+        sidecar with everything needed to use it correctly later: feature
+        column order, the label encoding convention, and the config that
+        produced it, for provenance."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.model.save_model(str(path))
+        joblib.dump(self.model, path)
 
         meta_path = path.with_suffix(path.suffix + ".meta.json")
         meta = {
@@ -87,8 +146,7 @@ class TrainedModel:
         with meta_path.open("r") as f:
             meta = json.load(f)
 
-        model = xgb.XGBClassifier()
-        model.load_model(str(path))
+        model = joblib.load(path)
 
         return cls(
             model=model,
@@ -178,15 +236,26 @@ class ModelTrainer:
             raise ValueError("Cannot fit on an empty training set.")
 
         feature_columns = self._resolve_feature_columns(train_df, date_column)
-        y_all = self._encode_labels(train_df[self._config.label_column])
+
+        # Calibration slice is carved off FIRST, before anything else --
+        # chronological order ends up [fit] -> [early-stopping validation]
+        # -> [calibration] -> (test.csv, never touched here). scale_pos_weight
+        # and early stopping both then operate only on `main_df`, so the
+        # calibration slice never leaks into the base model's own fitting.
+        main_df, calibration_df = self._carve_calibration_slice(train_df, feature_columns, date_column)
+
+        y_all = self._encode_labels(main_df[self._config.label_column])
         scale_pos_weight = self._resolve_scale_pos_weight(y_all)
         classifier = self._build_classifier(scale_pos_weight)
 
         if self._config.early_stopping_rounds is not None:
-            classifier = self._fit_with_early_stopping(classifier, train_df, feature_columns, y_all, date_column)
+            classifier = self._fit_with_early_stopping(classifier, main_df, feature_columns, y_all, date_column)
         else:
-            logger.info("Fitting on %d rows, %d features, no early stopping.", len(train_df), len(feature_columns))
-            classifier.fit(train_df[feature_columns], y_all)
+            logger.info("Fitting on %d rows, %d features, no early stopping.", len(main_df), len(feature_columns))
+            classifier.fit(main_df[feature_columns], y_all)
+
+        if calibration_df is not None:
+            classifier = self._calibrate(classifier, calibration_df, feature_columns)
 
         return TrainedModel(
             model=classifier,
@@ -197,6 +266,49 @@ class ModelTrainer:
             trained_at=pd.Timestamp.now(),
             config=self._config,
         )
+
+    def _carve_calibration_slice(
+        self, train_df: pd.DataFrame, feature_columns: list[str], date_column: str
+    ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+        """Returns (main_df, calibration_df). calibration_df is None if
+        calibration is disabled, or if the requested slice would be too
+        small/single-class to fit a meaningful calibration on -- in either
+        case main_df is just the original train_df, unchanged."""
+        if self._config.calibration_method == "none":
+            return train_df, None
+
+        sorted_df = train_df.sort_values(date_column)
+        split_idx = int(len(sorted_df) * (1 - self._config.calibration_fraction))
+        main_df, calibration_df = sorted_df.iloc[:split_idx], sorted_df.iloc[split_idx:]
+
+        calib_y = self._encode_labels(calibration_df[self._config.label_column])
+        if len(calibration_df) < 10 or calib_y.nunique() < 2:
+            logger.warning(
+                "Calibration slice too small or single-class (%d rows) -- skipping calibration, "
+                "the model will return raw (uncalibrated) probabilities instead.",
+                len(calibration_df),
+            )
+            return train_df, None
+
+        return main_df, calibration_df
+
+    def _calibrate(self, classifier: xgb.XGBClassifier, calibration_df: pd.DataFrame, feature_columns: list[str]):
+        calib_y = self._encode_labels(calibration_df[self._config.label_column])
+        logger.info(
+            "Calibrating (%s) on %d held-out rows (%.0f%% of train_df, most recent by date).",
+            self._config.calibration_method, len(calibration_df), self._config.calibration_fraction * 100,
+        )
+        # FrozenEstimator marks the already-fitted classifier as "don't
+        # refit me" -- CalibratedClassifierCV then only fits the
+        # calibration mapping on calibration_df, never touching the base
+        # model's own training data again. (This replaces the older
+        # cv="prefit" parameter, removed in modern scikit-learn -- verified
+        # directly against the installed scikit-learn version rather than
+        # assumed, given how many XGBoost API surprises turned up earlier
+        # in this project.)
+        calibrated = CalibratedClassifierCV(FrozenEstimator(classifier), method=self._config.calibration_method)
+        calibrated.fit(calibration_df[feature_columns], calib_y)
+        return calibrated
 
     def _fit_with_early_stopping(
         self, classifier: xgb.XGBClassifier, train_df: pd.DataFrame, feature_columns: list[str],

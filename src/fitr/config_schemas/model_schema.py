@@ -89,6 +89,29 @@ class ModelConfig(BaseModel):
         0.15, gt=0, lt=1, description="Fraction of train_df (by date, most recent rows) held out for early stopping."
     )
 
+    # ---- probability calibration (also fitr-level orchestration) --------
+    calibration_method: Literal["none", "sigmoid", "isotonic"] = Field(
+        "none",
+        description="Post-hoc probability calibration, fit AFTER the base model, on its own held-out "
+        "time-based tail slice of the training data (never test.csv -- see calibration_fraction). "
+        "'sigmoid' (Platt scaling) assumes a roughly sigmoid-shaped miscalibration and needs less data; "
+        "'isotonic' is more flexible (no shape assumption) but wants more calibration data to avoid "
+        "overfitting -- prefer sigmoid unless you have a few thousand+ rows to spare for this slice. "
+        "Calibration only changes what the probability VALUE means -- it's a monotonic transform, so it "
+        "never changes rank order and therefore never changes precision/recall at a fixed threshold. It "
+        "matters for anything that uses the probability value directly (position sizing), not for "
+        "threshold-based decisions.",
+    )
+    calibration_fraction: float = Field(
+        0.15,
+        gt=0,
+        lt=1,
+        description="Fraction of train_df (by date, most recent rows) held out for calibration. This is "
+        "a SEPARATE slice from the early-stopping validation slice, taken from what's left after that "
+        "slice is carved out -- chronological order is: [fit] -> [early-stopping validation] -> "
+        "[calibration] -> (test.csv, entirely untouched by training).",
+    )
+
     # ---- reproducibility / runtime --------------------------------------
     n_jobs: int = Field(-1, description="-1 = use all available cores.")
     random_state: int = Field(42, description="Seed for reproducible training runs.")

@@ -7,6 +7,7 @@ verify."""
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from fitr.dataset.builder import DatasetBuilder, split_by_date
 from fitr.labeling.labeler import FAILURE, INCONCLUSIVE, SUCCESS, LabelResult
@@ -47,8 +48,11 @@ class FakeLabeler:
         return self._outcomes[(ticker, pd.Timestamp(as_of_date))]
 
 
-def _label(ticker, date, outcome):
-    return LabelResult(ticker=ticker, candidate_date=pd.Timestamp(date), outcome=outcome)
+def _label(ticker, date, outcome, trigger_reason=None, forward_return=None):
+    return LabelResult(
+        ticker=ticker, candidate_date=pd.Timestamp(date), outcome=outcome,
+        trigger_reason=trigger_reason, forward_return=forward_return,
+    )
 
 
 def test_build_produces_a_row_with_features_setups_and_label():
@@ -65,6 +69,17 @@ def test_build_produces_a_row_with_features_setups_and_label():
     assert row["label"] == SUCCESS
     assert row["setup_setup_a"] == True  # noqa: E712
     assert row["setup_setup_b"] == False  # noqa: E712
+
+
+def test_row_carries_trigger_reason_and_forward_return():
+    scanner = FakeScanner(["setup_a"], {D[0]: [ScanResult("AAA", D[0], ["setup_a"], {})]})
+    labeler = FakeLabeler({("AAA", D[0]): _label("AAA", D[0], SUCCESS, trigger_reason="target_hit", forward_return=0.083)})
+    builder = DatasetBuilder(FakeProxy(), scanner, FakeFeatureEngine(), labeler, ["AAA"])
+
+    df = builder.build(D[0], D[0])
+
+    assert df.iloc[0]["trigger_reason"] == "target_hit"
+    assert df.iloc[0]["forward_return"] == pytest.approx(0.083)
 
 
 def test_inconclusive_candidates_are_excluded_from_the_dataset():
