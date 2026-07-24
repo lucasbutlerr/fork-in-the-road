@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from fitr.data.yf_proxy import TickerNotFoundError
+from fitr.modeling.position_sizer import PositionSizeResult
 from fitr.modeling.predictor import LivePredictor, format_predictions
 from fitr.scanning.scanner import ScanResult
 
@@ -184,3 +185,44 @@ def test_format_predictions_does_not_crash_and_includes_key_fields():
     assert "73.0%" in text
     assert "setup_a" in text
     assert "feat_a" in text  # the highest-importance feature should be surfaced
+
+
+def test_format_predictions_can_hide_scan_metrics_and_model_features():
+    scanner = FakeScanner(["setup_a"], [ScanResult("AAA", pd.Timestamp("2024-06-03"), ["setup_a"], {"m1": 1.23})])
+    fe = FakeFeatureEngine(["feat_a"])
+    model = FakeTrainedModel(feature_columns=["feat_a", "setup_setup_a"], probs_in_call_order=[0.5], importances=[0.9, 0.1])
+    predictions = LivePredictor(scanner, fe, model).predict(["AAA"], "2024-06-03")
+
+    text = format_predictions(predictions, model, show_scan_metrics=False, show_model_features=False)
+
+    assert "Scan metrics" not in text
+    assert "Top model features" not in text
+    assert "AAA" in text  # the candidate itself is still shown
+
+
+def test_format_predictions_shows_position_size_when_attached():
+    scanner = FakeScanner(["setup_a"], [ScanResult("AAA", pd.Timestamp("2024-06-03"), ["setup_a"], {})])
+    fe = FakeFeatureEngine(["feat_a"])
+    model = FakeTrainedModel(feature_columns=["feat_a", "setup_setup_a"], probs_in_call_order=[0.5])
+    predictions = LivePredictor(scanner, fe, model).predict(["AAA"], "2024-06-03")
+
+    predictions[0].position_size = PositionSizeResult(
+        ticker="AAA", predicted_probability=0.5, method="fixed_fractional",
+        raw_fraction=0.1, recommended_fraction=0.1, recommended_shares=40,
+        position_value=1000.0, entry_price=25.0, equity=10_000.0, capped=False,
+    )
+
+    text = format_predictions(predictions, model)
+    assert "Suggested allocation" in text
+    assert "10.0%" in text
+    assert "40 shares" in text
+
+
+def test_format_predictions_omits_position_size_section_when_not_attached():
+    scanner = FakeScanner(["setup_a"], [ScanResult("AAA", pd.Timestamp("2024-06-03"), ["setup_a"], {})])
+    fe = FakeFeatureEngine(["feat_a"])
+    model = FakeTrainedModel(feature_columns=["feat_a", "setup_setup_a"], probs_in_call_order=[0.5])
+    predictions = LivePredictor(scanner, fe, model).predict(["AAA"], "2024-06-03")
+
+    text = format_predictions(predictions, model)
+    assert "Suggested allocation" not in text

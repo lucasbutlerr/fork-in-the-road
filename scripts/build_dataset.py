@@ -6,6 +6,18 @@ Only the config files should ever need editing to change what this script
 does: config/universe.txt, config/scanning_criteria.yaml,
 config/features.yaml, config/labeling.yaml.
 
+CACHING: the expensive part of a rebuild -- scanning the whole universe,
+day by day -- is cached, keyed by (scanning_criteria.yaml, universe,
+date range). Re-running this script after ONLY changing features.yaml,
+labeling.yaml, or --cooldown-days reuses that cached scan and skips
+straight to the cheap part (labeling + feature computation on the
+already-found candidates). Changing scanning_criteria.yaml, the universe,
+or --start/--end invalidates the cache automatically -- there's no way
+around a fresh scan in that case, since the candidate set itself changes.
+Use --force-rescan to ignore an existing cache even when the scanning
+inputs haven't changed (e.g. to pick up newer price data for the same
+historical window).
+
 Usage:
     python -m scripts.build_dataset --start 2022-01-01 --end 2024-12-31 --split-date 2024-06-01
 
@@ -13,6 +25,13 @@ Usage:
         --start 2022-01-01 --end 2024-12-31 --split-date 2024-06-01 \\
         --universe config/universe.txt --cooldown-days 5 \\
         --output-dir data/processed -v
+
+    # Only labeling.yaml or features.yaml changed since the last run --
+    # this reuses the cached scan automatically, no flag needed:
+    python -m scripts.build_dataset --start 2022-01-01 --end 2024-12-31 --split-date 2024-06-01
+
+    # Force a fresh scan even though the scanning inputs haven't changed:
+    python -m scripts.build_dataset --start 2022-01-01 --end 2024-12-31 --split-date 2024-06-01 --force-rescan
 
 Requires an editable install (`pip install -e ".[dev]"`) and a live network
 connection for yfinance. Expect a full run over the ~1,800-ticker universe
@@ -49,6 +68,12 @@ def main() -> None:
         "--cooldown-days", type=int, default=5, help="Per-ticker cooldown in trading days (default 5, ~1 week)"
     )
     parser.add_argument("--output-dir", default="data/processed")
+    parser.add_argument("--scan-cache-dir", default="data/cache/scans", help="Where cached raw scans are stored")
+    parser.add_argument(
+        "--force-rescan", action="store_true",
+        help="Ignore any cached scan and re-scan the whole universe, even if scanning_criteria.yaml, "
+        "the universe, and the date range are unchanged from a prior run.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Log progress every 20 trading days")
     args = parser.parse_args()
 
@@ -84,13 +109,15 @@ def main() -> None:
     labeler = OutcomeLabeler(proxy, labeling_config)
 
     builder = DatasetBuilder(
-        proxy, scanner, feature_engine, labeler, universe, cooldown_trading_days=args.cooldown_days
+        proxy, scanner, feature_engine, labeler, universe,
+        cooldown_trading_days=args.cooldown_days, cache_dir=args.scan_cache_dir,
     )
 
     print(f"Building dataset from {args.start} to {args.end}...\n")
-    df = builder.build(args.start, args.end)
+    df = builder.build(args.start, args.end, force_rescan=args.force_rescan)
     stats = builder.last_build_stats
 
+    print(f"Used cached scan:         {stats.used_cached_scan}")
     print(f"Trading days scanned:     {stats.trading_days_scanned}")
     print(f"Total scan matches:       {stats.total_scan_matches}")
     print(f"Excluded (cooldown):      {stats.excluded_by_cooldown}")
@@ -110,11 +137,14 @@ def main() -> None:
     print(f"\nTrain: {len(train_df)} rows (before {args.split_date})")
     print(f"Test:  {len(test_df)} rows (on/after {args.split_date})")
 
+    full_path = f"{args.output_dir}/full.csv"
     train_path = f"{args.output_dir}/train.csv"
     test_path = f"{args.output_dir}/test.csv"
+    builder.save(df, full_path)
     builder.save(train_df, train_path)
     builder.save(test_df, test_path)
-    print(f"\nWrote {train_path}")
+    print(f"\nWrote {full_path} ({len(df)} rows, unsplit -- input for scripts/walk_forward.py)")
+    print(f"Wrote {train_path}")
     print(f"Wrote {test_path}\n")
 
 

@@ -22,6 +22,7 @@ import pandas as pd
 
 from fitr.data.yf_proxy import NoDataInRangeError, TickerNotFoundError
 from fitr.features.feature_engine import FeatureEngine
+from fitr.modeling.position_sizer import PositionSizeResult
 from fitr.modeling.trainer import TrainedModel
 from fitr.scanning.scanner import BreakoutScanner
 
@@ -37,6 +38,7 @@ class PredictionResult:
     matched_setups: list[str]
     scan_metrics: dict[str, float]  # the scanning_criteria.yaml metrics that flagged this candidate
     features: dict[str, float]  # the full features.yaml feature vector fed to the model
+    position_size: PositionSizeResult | None = None  # filled in by scan_live.py if a PositionSizer is configured
 
 
 class LivePredictor:
@@ -103,29 +105,52 @@ class LivePredictor:
 
 
 def format_predictions(
-    predictions: list[PredictionResult], trained_model: TrainedModel, top_n: int = 20, top_features: int = 5
+    predictions: list[PredictionResult],
+    trained_model: TrainedModel,
+    top_n: int = 20,
+    top_features: int = 5,
+    show_scan_metrics: bool = True,
+    show_model_features: bool = True,
 ) -> str:
-    """Plain-text rendering of a ranked prediction list -- shown in full
-    (rank, probability, matched setups, scan metrics that drove the flag,
-    and this candidate's own values for the model's most important
-    features) for the top `top_n`, with a compact summary line for the
-    rest. Shared by scripts/scan_live.py so the script stays thin."""
+    """Plain-text rendering of a ranked prediction list, shown in full for
+    the top `top_n` with a compact summary line for the rest. Shared by
+    scripts/scan_live.py so the script stays thin.
+
+    show_scan_metrics/show_model_features default to True for backward
+    compatibility, but scripts/scan_live.py turns both off -- once you're
+    looking at today's actual candidates rather than debugging the model,
+    the scanning metrics and feature values are noise; what you want is
+    the ranked list and (if configured) how much to allocate to each one."""
     if not predictions:
         return "No candidates matched any setup."
 
-    global_importances = trained_model.feature_importances()
-    top_feature_names = sorted(global_importances, key=global_importances.get, reverse=True)[:top_features]
+    top_feature_names = []
+    if show_model_features:
+        global_importances = trained_model.feature_importances()
+        top_feature_names = sorted(global_importances, key=global_importances.get, reverse=True)[:top_features]
 
     lines = [f"{len(predictions)} candidate(s), ranked by predicted P(success):\n"]
 
     for p in predictions[:top_n]:
         lines.append(f"#{p.rank}  {p.ticker}  --  P(success) = {p.predicted_probability:.1%}")
         lines.append(f"     Matched setups: {', '.join(p.matched_setups)}")
-        metrics_str = ", ".join(f"{k}={v:.4f}" for k, v in p.scan_metrics.items())
-        lines.append(f"     Scan metrics: {metrics_str}")
-        if top_feature_names:
+
+        if show_scan_metrics:
+            metrics_str = ", ".join(f"{k}={v:.4f}" for k, v in p.scan_metrics.items())
+            lines.append(f"     Scan metrics: {metrics_str}")
+
+        if show_model_features and top_feature_names:
             feat_str = ", ".join(f"{name}={p.features.get(name, float('nan')):.4f}" for name in top_feature_names)
             lines.append(f"     Top model features (globally most important): {feat_str}")
+
+        if p.position_size is not None:
+            ps = p.position_size
+            capped_note = " (capped by max_position_fraction)" if ps.capped else ""
+            lines.append(
+                f"     Suggested allocation: {ps.recommended_fraction:.1%} of equity{capped_note}  "
+                f"({ps.recommended_shares} shares @ {ps.entry_price:.2f} = {ps.position_value:,.2f})"
+            )
+
         lines.append("")
 
     if len(predictions) > top_n:

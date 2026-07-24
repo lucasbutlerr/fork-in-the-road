@@ -1,5 +1,5 @@
-rank,ticker,date,predicted_probability,matched_setups
-1,GM,2026-07-21,0.318645,volatility_squeeze_breakout|pullback_reclaim
-2,AIR,2026-07-21,0.289325,pullback_reclaim
-3,SJM,2026-07-21,0.275718,pullback_reclaim
-4,KELYA,2026-07-21,0.201249,pullback_reclaim
+rank,ticker,date,predicted_probability,matched_setups,recommended_fraction,recommended_shares
+1,NVCR,2026-07-23,0.508420,pullback_reclaim|gap_and_go,,
+2,THRM,2026-07-23,0.478723,classic_high_breakout|fresh_breakout_day|gap_and_go,,
+3,FLR,2026-07-23,0.344318,pullback_reclaim,,
+4,EMR,2026-07-23,0.305624,pullback_reclaim,,

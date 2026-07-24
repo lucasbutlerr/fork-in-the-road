@@ -1,0 +1,15 @@
+# walk_forward.yaml -- runs the SAME model.yaml config through multiple
+# sequential train/test splits instead of trusting one fixed split, so you
+# can see whether performance is genuinely stable or was a lucky/unlucky
+# read on one particular period.
+#
+# See scripts/walk_forward.py's own recommendations for how to choose
+# n_folds and window_type given how much history you currently have --
+# these defaults are a reasonable starting point for a project still
+# building up its total dataset, not a universal answer.
+
+n_folds: 4
+window_type: expanding      # switch to "rolling" once you have several years of history
+rolling_train_window_days: 365   # only used if window_type is "rolling"
+initial_train_fraction: 0.5      # first half of the date range is training-only, never a test fold
+min_test_rows: 20                # folds below this are still shown, just flagged as low-confidence

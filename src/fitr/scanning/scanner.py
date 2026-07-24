@@ -10,6 +10,8 @@ this is the guarantee referenced in FeatureEngine's own docstring.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 
@@ -96,6 +98,25 @@ class BreakoutScanner:
         like DatasetBuilder to build a stable set of one-hot columns
         regardless of which setups happen to match in a given run."""
         return [s.name for s in self._config.setups]
+
+    @property
+    def metric_names(self) -> list[str]:
+        """All configured metric names (from scanning_criteria.yaml's
+        `metrics` block), in config order -- used by DatasetBuilder to
+        build stable columns for its raw-scan cache regardless of which
+        metrics happen to appear in any single day's results."""
+        return [m.name for m in self._config.metrics]
+
+    def config_fingerprint(self) -> str:
+        """A short, deterministic hash of the scanning config this
+        scanner was built from -- used by DatasetBuilder's candidate
+        cache to detect whether scanning_criteria.yaml has changed since
+        a cached raw scan was produced. Two BreakoutScanner instances
+        built from equivalent configs (even loaded from different file
+        paths, or constructed in-memory) produce the same fingerprint;
+        any change to setups, conditions, or metrics changes it."""
+        canonical = json.dumps(self._config.model_dump(), sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
     def _evaluate_condition(self, cond: ConditionSpec, metrics: dict[str, float]) -> ConditionResult:
         value = metrics.get(cond.metric, float("nan"))

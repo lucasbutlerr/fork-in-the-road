@@ -42,16 +42,16 @@ method: fractional_kelly
 risk_fraction: 0.01          # risk 1% of equity per trade
 
 # ---- fractional_kelly -----------------------------------------------------
-kelly_multiplier: 0.01       # see the note above -- NOT the "textbook" 0.25
+kelly_multiplier: 0.05       # see the note above -- NOT the "textbook" 0.25
 
 # ---- trade economics, used by both methods -------------------------------
 # Should generally match labeling.yaml's target_return/stop_loss_return,
 # since that's what the model was trained to predict -- kept
 # independently configurable in case you want to size for a different
 # planned exit than the label horizon used.
-target_return: 0.08
-stop_loss_return: -0.04
+target_return: 0.15
+stop_loss_return: -0.08
 
 # ---- portfolio-level guardrails, applied regardless of method -----------
-max_position_fraction: 0.10  # never more than 10% of equity in one position
+max_position_fraction: 0.2  # never more than 20% of equity in one position
 min_position_fraction: 0.0   # below this recommended size, round down to zero
