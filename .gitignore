@@ -220,3 +220,6 @@ __marimo__/
 # fitr specific
 data/
 temp/
+config/*
+!config/universe.txt
+!config/*_example.yaml
