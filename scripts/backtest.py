@@ -21,29 +21,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
 
 import pandas as pd
 
 from fitr.config_schemas.loader import ConfigError, load_config
 from fitr.config_schemas.position_sizing_schema import PositionSizingConfig
-from fitr.modeling.backtest import BacktestSimulator, format_backtest_report
+from fitr.modeling.backtest import BacktestSimulator, format_backtest_report, write_trades_csv
 from fitr.modeling.position_sizer import PositionSizer
 from fitr.modeling.trainer import TrainedModel
-
-
-def write_trades_csv(trades, path: str) -> None:
-    with open(path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            ["date", "ticker", "predicted_probability", "recommended_fraction", "forward_return", "equity_before", "equity_after", "pnl"]
-        )
-        for t in trades:
-            writer.writerow(
-                [t.date.date(), t.ticker, f"{t.predicted_probability:.6f}", f"{t.recommended_fraction:.6f}",
-                 f"{t.forward_return:.6f}", f"{t.equity_before:.2f}", f"{t.equity_after:.2f}", f"{t.pnl:.2f}"]
-            )
 
 
 def main() -> None:

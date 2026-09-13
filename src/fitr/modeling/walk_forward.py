@@ -40,7 +40,7 @@ import pandas as pd
 
 from fitr.config_schemas.model_schema import ModelConfig
 from fitr.config_schemas.walk_forward_schema import WalkForwardConfig
-from fitr.modeling.backtest import BacktestReport, BacktestSimulator
+from fitr.modeling.backtest import BacktestReport, BacktestSimulator, format_backtest_report
 from fitr.modeling.evaluator import EvaluationReport, ModelEvaluator
 from fitr.modeling.position_sizer import PositionSizer
 from fitr.modeling.trainer import ModelTrainer
@@ -160,7 +160,9 @@ def _fmt(value: float) -> str:
     return "N/A" if value != value else f"{value:.1%}"
 
 
-def format_walk_forward_report(report: WalkForwardReport, show_calibration: bool = True, show_setups: bool = True) -> str:
+def format_walk_forward_report(
+    report: WalkForwardReport, show_calibration: bool = True, show_setups: bool = True, full_backtest_detail: bool = False
+) -> str:
     if not report.folds:
         return "No folds produced -- date range too short for the configured n_folds/initial_train_fraction."
 
@@ -188,11 +190,19 @@ def format_walk_forward_report(report: WalkForwardReport, show_calibration: bool
             f"success_recall={_fmt(fr.report.success_accuracy)}  "
             f"predicted_success_count={predicted_success} (of {fr.n_test_rows} test rows)"
         )
+
         if fr.backtest is not None:
-            lines.append(
-                f"    backtest: {fr.backtest.n_trades} trades, total_return={fr.backtest.total_return:+.2%}, "
-                f"max_drawdown={fr.backtest.max_drawdown:.2%}"
-            )
+            if full_backtest_detail:
+                lines.append("    --- full backtest detail for this fold ---")
+                for line in format_backtest_report(fr.backtest).splitlines():
+                    lines.append(f"    {line}" if line else "")
+                lines.append("    --- end backtest detail ---")
+            else:
+                lines.append(
+                    f"    backtest: {fr.backtest.n_trades} trades, total_return={fr.backtest.total_return:+.2%}, "
+                    f"win_rate={_fmt(fr.backtest.win_rate)}, sharpe_like={fr.backtest.sharpe_like_ratio:.2f}, "
+                    f"max_drawdown={fr.backtest.max_drawdown:.2%}"
+                )
 
         if show_calibration and fr.report.calibration_curve:
             lines.append("    calibration (mean predicted -> actual rate, by bucket):")

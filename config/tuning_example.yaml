@@ -1,0 +1,71 @@
+# tuning.yaml -- search space and trial budget for the joint model +
+# feature-selection + labeling tuning study (Phase 3 Step 5). Deliberately
+# does NOT include scanning_criteria.yaml -- that's the one config
+# expensive to vary (any change forces a real rescan), so it gets its own
+# separately-budgeted study rather than sharing this one's per-trial cost.
+#
+# Every tunable parameter is a {low, high} range here, not a hardcoded
+# value in Python -- change the search space by editing this file, same
+# as everything else in this project.
+
+n_trials: 100
+seed: 0
+
+universe_path: config/universe.txt
+scanning_config_path: config/scanning_criteria.yaml
+features_config_path: config/features.yaml
+
+# Match whatever you last ran scripts/build_dataset.py with -- the first
+# trial's scan will be a cache hit (fast) instead of a fresh scan (slow)
+# if these match your last build. tuning_end_date should match that run's
+# --split-date exactly: everything on/after it stays completely invisible
+# to every trial, preserving it as a genuine, untouched final holdout.
+scan_start_date: "2023-01-01"
+scan_end_date: "2025-12-31"
+tuning_end_date: "2025-06-01"
+scan_cache_dir: data/cache/scans
+
+walk_forward_config_path: config/walk_forward.yaml
+min_trades_for_scoring: 30
+
+# ---- labeling.yaml search ranges ---------------------------------------------
+horizon_trading_days:
+  low: 5
+  high: 20
+
+target_return:
+  low: 0.04
+  high: 0.15
+
+stop_loss_magnitude:      # positive here -- negated internally to build LabelingConfig
+  low: 0.02
+  high: 0.10
+
+cooldown_trading_days:
+  low: 1
+  high: 15
+
+# ---- model.yaml search ranges --------------------------------------------------
+n_estimators:
+  low: 100
+  high: 500
+
+max_depth:
+  low: 3
+  high: 8
+
+learning_rate:
+  low: 0.01
+  high: 0.3
+  log: true          # spans multiple orders of magnitude -- log-scale sampling is more efficient here
+
+# ---- feature selection -----------------------------------------------------------
+# Each group is toggled on/off as ONE search dimension, not per-feature --
+# per earlier discussion, 2^36 individual toggles is an impractical
+# search space. Features not listed in any group are always included.
+feature_groups:
+  rsi_family: [rsi_14, rsi_avg_5d, rsi_slope_5d, days_rsi_above_60, rsi_std_10d]
+  macd_family: [macd_value, macd_hist_avg_5d, macd_hist_slope_5d, days_macd_above_signal, macd_std_10d]
+  volume_family: [relative_volume_20d, volume_ratio_5d_20d, volume_zscore_20d, obv_slope_20d, volume_trend_slope_20d]
+  volatility_family: [atr_normalized_14, return_volatility_20d, bollinger_width_20d]
+  market_context_family: [market_return_20d, return_20d_vs_market, sector_return_20d, return_20d_vs_sector]

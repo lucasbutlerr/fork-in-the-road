@@ -28,6 +28,7 @@ are meaningless in this context and deliberately ignored.
 """
 from __future__ import annotations
 
+import csv
 import logging
 from dataclasses import dataclass, field
 
@@ -223,3 +224,21 @@ def format_backtest_report(report: BacktestReport, max_trades_shown: int = 20) -
         lines.append("")
 
     return "\n".join(lines)
+
+
+def write_trades_csv(trades: list[TradeRecord], path: str) -> None:
+    """Shared by scripts/backtest.py and scripts/walk_forward.py -- one
+    definition of the trade-log CSV format, rather than each script
+    keeping its own copy that could quietly drift apart."""
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["date", "ticker", "predicted_probability", "recommended_fraction", "forward_return", "equity_before", "equity_after", "pnl"]
+        )
+        for t in trades:
+            writer.writerow(
+                [
+                    t.date.date(), t.ticker, f"{t.predicted_probability:.6f}", f"{t.recommended_fraction:.6f}",
+                    f"{t.forward_return:.6f}", f"{t.equity_before:.2f}", f"{t.equity_after:.2f}", f"{t.pnl:.2f}",
+                ]
+            )
