@@ -47,6 +47,7 @@ class LabelResult:
     trigger_reason: str | None = None
     forward_return: float | None = None
     trading_days_available: int | None = None
+    trading_days_held: int | None = None
 
 
 class OutcomeLabeler:
@@ -92,7 +93,7 @@ class OutcomeLabeler:
         self, ticker: str, candidate: pd.Timestamp, entry_price: float,
         target_price: float, stop_price: float, horizon_df: pd.DataFrame,
     ) -> LabelResult:
-        for date, row in horizon_df.iterrows():
+        for i, (date, row) in enumerate(horizon_df.iterrows()):
             hit_target = row["High"] >= target_price
             hit_stop = row["Low"] <= stop_price
             if hit_target and hit_stop:
@@ -104,6 +105,7 @@ class OutcomeLabeler:
                     entry_price=entry_price, trigger_date=date, trigger_price=stop_price,
                     trigger_reason="stop_hit_same_day_as_target_ambiguous",
                     forward_return=(stop_price - entry_price) / entry_price,
+                    trading_days_held=i + 1,
                 )
             if hit_stop:
                 return LabelResult(
@@ -111,6 +113,7 @@ class OutcomeLabeler:
                     entry_price=entry_price, trigger_date=date, trigger_price=stop_price,
                     trigger_reason="stop_hit",
                     forward_return=(stop_price - entry_price) / entry_price,
+                    trading_days_held=i + 1,
                 )
             if hit_target:
                 return LabelResult(
@@ -118,10 +121,14 @@ class OutcomeLabeler:
                     entry_price=entry_price, trigger_date=date, trigger_price=target_price,
                     trigger_reason="target_hit",
                     forward_return=(target_price - entry_price) / entry_price,
+                    trading_days_held=i + 1,
                 )
         # Neither threshold hit within the horizon -- counts as a failure
         # to achieve the target, regardless of whether it also avoided
-        # the stop.
+        # the stop. Note this can still carry a positive forward_return
+        # (e.g. price drifted up without ever touching target or stop) --
+        # that's intentional, not a bug, and is why backtest win-rate and
+        # model success-precision can diverge.
         last_date = horizon_df.index[-1]
         last_close = float(horizon_df["Close"].iloc[-1])
         return LabelResult(
@@ -129,6 +136,7 @@ class OutcomeLabeler:
             entry_price=entry_price, trigger_date=last_date, trigger_price=last_close,
             trigger_reason="horizon_expired_flat",
             forward_return=(last_close - entry_price) / entry_price,
+            trading_days_held=len(horizon_df),
         )
 
     def _label_end_of_horizon(
@@ -143,4 +151,5 @@ class OutcomeLabeler:
             entry_price=entry_price, trigger_date=last_date, trigger_price=last_close,
             trigger_reason="horizon_end",
             forward_return=forward_return,
+            trading_days_held=len(horizon_df),
         )

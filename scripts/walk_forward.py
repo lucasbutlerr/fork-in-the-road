@@ -20,6 +20,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+
+from scripts._config_defaults import resolve_config_default
 from pathlib import Path
 
 import pandas as pd
@@ -37,8 +39,8 @@ from fitr.tuning.scoring import score_from_walk_forward
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", required=True, help="Path to full.csv (the unsplit dataset from scripts/build_dataset.py)")
-    parser.add_argument("--walk-forward-config", default="config/walk_forward.yaml")
-    parser.add_argument("--model-config", default="config/model.yaml")
+    parser.add_argument("--walk-forward-config", default=resolve_config_default("walk_forward"))
+    parser.add_argument("--model-config", default=resolve_config_default("model"))
     parser.add_argument(
         "--position-sizing-config", default=None,
         help="Optional -- if given, each fold also gets a return-aware backtest, not just classification metrics.",

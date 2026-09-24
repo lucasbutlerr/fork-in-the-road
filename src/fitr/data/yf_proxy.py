@@ -145,10 +145,22 @@ class YFProxy:
                 # re-download nearly the same ~500-day window every
                 # single day for every ticker, making the cache almost
                 # useless for exactly the workload it exists to speed up.
-                cached_min, cached_max = cached.index.min(), cached.index.max()
-                if end_ts > cached_max:
+                # Gap detection is based on the RECORDED REQUESTED range,
+                # not the min/max of rows actually present. Those differ
+                # whenever a boundary lands on a non-trading day, and
+                # using the data bounds there means re-issuing the same
+                # empty fetch on every single call forever (see
+                # PriceCache's docstring). Falls back to data bounds only
+                # for caches written before coverage tracking existed.
+                coverage = self._cache.load_coverage(ticker)
+                if coverage is not None:
+                    covered_start, covered_end = coverage
+                else:
+                    covered_start, covered_end = cached.index.min(), cached.index.max()
+
+                if end_ts > covered_end:
                     self.stats.downloads += 1
-                    tail_start = cached_max + pd.Timedelta(days=1)
+                    tail_start = covered_end + pd.Timedelta(days=1)
                     raw_tail = self._download_raw(ticker, tail_start, end_ts)
                     if not raw_tail.empty:
                         self._cache.merge_and_save(ticker, raw_tail)
@@ -156,12 +168,13 @@ class YFProxy:
                     # end date is a weekend with no new trading days yet)
                     # -- NOT a TickerNotFoundError, unlike the first-fetch
                     # case above where empty really does mean "no data".
-                if start_ts < cached_min:
+                if start_ts < covered_start:
                     self.stats.downloads += 1
-                    head_end = cached_min - pd.Timedelta(days=1)
+                    head_end = covered_start - pd.Timedelta(days=1)
                     raw_head = self._download_raw(ticker, start_ts, head_end)
                     if not raw_head.empty:
                         self._cache.merge_and_save(ticker, raw_head)
+            self._cache.record_coverage(ticker, start_ts, end_ts)
         else:
             self.stats.cache_hits += 1
 

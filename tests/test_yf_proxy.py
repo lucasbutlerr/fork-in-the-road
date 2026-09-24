@@ -109,6 +109,42 @@ def test_get_history_rejects_start_after_end(proxy):
         proxy.get_history("MSFT", "2024-02-01", "2024-01-01")
 
 
+def test_non_trading_day_boundary_does_not_trigger_a_refetch_every_call(proxy, mock_download):
+    """Regression test for a real bug: requesting a start date that falls
+    on a weekend/holiday used to trigger a fresh (empty) download on every
+    single subsequent call, forever, because coverage was inferred from
+    the cached data's own min/max index rather than the range actually
+    requested. 2024-01-01 is a Monday holiday-observed range start in
+    this fixture's business-day calendar in some years, but to keep this
+    deterministic we pick an actual weekend: 2024-06-01 is a Saturday, so
+    the first trading day on/after it is 2024-06-03.
+    """
+    proxy.get_history("MSFT", "2024-06-01", "2024-06-14")
+    calls_after_first = len(mock_download)
+
+    # Same range, repeated several times -- none of these should issue a
+    # new download. Under the old (buggy) inference-from-data-bounds
+    # logic, cached.index.min() would be 2024-06-03 (not 2024-06-01), so
+    # every call below would conclude "the head is still missing" and
+    # re-issue an empty fetch for it.
+    for _ in range(3):
+        proxy.get_history("MSFT", "2024-06-01", "2024-06-14")
+    assert len(mock_download) == calls_after_first
+
+
+def test_coverage_survives_a_new_proxy_instance(tmp_path, mock_download):
+    cache_dir = tmp_path / "cache"
+    proxy1 = YFProxy(cache_dir=cache_dir, reference_ticker="AAPL", calendar_lookback_years=5)
+    proxy1.get_history("MSFT", "2024-06-01", "2024-06-14")
+    calls_after_first = len(mock_download)
+
+    # A fresh YFProxy instance pointed at the same cache_dir should read
+    # the persisted coverage record from disk, not just in-memory state.
+    proxy2 = YFProxy(cache_dir=cache_dir, reference_ticker="AAPL", calendar_lookback_years=5)
+    proxy2.get_history("MSFT", "2024-06-01", "2024-06-14")
+    assert len(mock_download) == calls_after_first
+
+
 # ---- retry / error handling ---------------------------------------------
 
 def test_download_retries_then_succeeds(tmp_path, monkeypatch, business_days):

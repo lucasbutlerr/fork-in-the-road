@@ -22,6 +22,8 @@ installed, and a live network connection for yfinance.
 from __future__ import annotations
 
 import argparse
+
+from scripts._config_defaults import resolve_config_default
 import csv
 
 import pandas as pd
@@ -86,13 +88,13 @@ def main() -> None:
     parser.add_argument("--model", required=True, help="Path to a saved model .joblib (from scripts/train_model.py)")
     parser.add_argument("--date", default=None, help="Date to scan as-of (default: today)")
     parser.add_argument("--universe", default="config/universe.txt")
-    parser.add_argument("--scanning-config", default="config/scanning_criteria.yaml")
-    parser.add_argument("--features-config", default="config/features.yaml")
+    parser.add_argument("--scanning-config", default=resolve_config_default("scanning_criteria"))
+    parser.add_argument("--features-config", default=resolve_config_default("features"))
     parser.add_argument(
         "--position-sizing-config", default=None,
         help="Optional -- if given, each candidate also gets a suggested equity allocation.",
     )
-    parser.add_argument("--labeling-config", default="config/labeling.yaml", help="Only used to sanity-check against --position-sizing-config")
+    parser.add_argument("--labeling-config", default=resolve_config_default("labeling"), help="Only used to sanity-check against --position-sizing-config")
     parser.add_argument("--equity", type=float, default=100_000.0, help="Account equity, for position sizing (default 100,000)")
     parser.add_argument("--top", type=int, default=20, help="How many top candidates to show in full detail (default 20)")
     parser.add_argument(

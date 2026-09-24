@@ -21,6 +21,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+
+from scripts._config_defaults import resolve_config_default
 from pathlib import Path
 
 import pandas as pd
@@ -36,7 +38,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", required=True, help="Path to a saved model .joblib (from scripts/train_model.py)")
     parser.add_argument("--test", required=True, help="Path to test.csv (must include a forward_return column)")
-    parser.add_argument("--position-sizing-config", default="config/position_sizing.yaml")
+    parser.add_argument("--position-sizing-config", default=resolve_config_default("position_sizing"))
     parser.add_argument("--threshold", type=float, default=0.5, help="Only trade candidates at or above this P(success)")
     parser.add_argument("--starting-equity", type=float, default=100_000.0)
     parser.add_argument("--trades-output", default="data/backtests/trades.csv", help="Where to write the full trade log. Pass '' to skip.")

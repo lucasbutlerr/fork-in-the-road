@@ -51,6 +51,7 @@ from fitr.data.yf_proxy import YFProxy
 from fitr.dataset.builder import DatasetBuilder
 from fitr.features.feature_engine import FeatureEngine
 from fitr.labeling.labeler import OutcomeLabeler
+from fitr.modeling.trainer import NON_FEATURE_COLUMNS
 from fitr.modeling.walk_forward import WalkForwardValidator
 from fitr.scanning.scanner import BreakoutScanner
 from fitr.tuning.scoring import GATED_SCORE, expected_value_score_from_walk_forward
@@ -159,7 +160,16 @@ class JointTuningObjective:
             if not include:
                 excluded.update(names)
 
-        non_feature_columns = {"ticker", "date", "label", "trigger_reason", "forward_return"}
+        # Reuse the trainer's canonical exclusion set rather than keeping
+        # a separate hardcoded copy here -- a prior version of this method
+        # had its own stale list that never got updated when
+        # trading_days_held was added as a post-outcome metadata column,
+        # which silently let it through as a trainable feature (real
+        # label leakage, since it's only known once a trade's outcome has
+        # already played out) whenever an explicit feature_columns list
+        # was suggested for a trial.
+        label_column = ModelConfig.model_fields["label_column"].default
+        non_feature_columns = NON_FEATURE_COLUMNS | {"date", label_column}
         all_columns = [c for c in tuning_df.columns if c not in non_feature_columns]
         return [c for c in all_columns if c not in excluded]
 

@@ -26,6 +26,8 @@ prior scripts/build_dataset.py run.
 from __future__ import annotations
 
 import argparse
+
+from scripts._config_defaults import resolve_config_default
 import csv
 import json
 from pathlib import Path
@@ -59,7 +61,7 @@ def write_trial_log_csv(trial_log: list[dict], path: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--tuning-config", default="config/tuning.yaml")
+    parser.add_argument("--tuning-config", default=resolve_config_default("tuning"))
     parser.add_argument("--output-dir", default="data/tuning_runs")
     args = parser.parse_args()
 

@@ -1,6 +1,12 @@
 [project]
 name = "fork-in-the-road"
 version = "0.1.0"
+description = "An XGBoost pipeline that scans US equities for breakout setups, calibrates success probability, and sizes positions with a Kelly-derived rule."
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Lucas Butler", email = "lucasmybutler@gmail.com" },
+]
 requires-python = ">=3.12"
 dependencies = [
     "pandas>=2.2",

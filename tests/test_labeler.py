@@ -87,6 +87,7 @@ def test_target_hit_before_stop_is_success(proxy, price_paths):
     assert result.outcome == SUCCESS
     assert result.trigger_reason == "target_hit"
     assert result.trigger_date == HORIZON_DATES[2]
+    assert result.trading_days_held == 3  # target hit on the 3rd trading day of the horizon
 
 
 def test_stop_hit_before_target_is_failure(proxy, price_paths):
@@ -101,6 +102,7 @@ def test_stop_hit_before_target_is_failure(proxy, price_paths):
     assert result.outcome == FAILURE
     assert result.trigger_reason == "stop_hit"
     assert result.trigger_date == HORIZON_DATES[1]
+    assert result.trading_days_held == 2  # stop hit on the 2nd trading day of the horizon
 
 
 def test_neither_hit_within_horizon_is_failure(proxy, price_paths):
@@ -116,6 +118,12 @@ def test_neither_hit_within_horizon_is_failure(proxy, price_paths):
     result = OutcomeLabeler(proxy, FIRST_TOUCH).label("FLAT", CANDIDATE)
     assert result.outcome == FAILURE
     assert result.trigger_reason == "horizon_expired_flat"
+    assert result.trading_days_held == len(HORIZON_DATES)
+    # Important, non-buggy quirk: a horizon-expired FAILURE can still carry
+    # a positive forward_return (price drifted up without ever touching
+    # target or stop) -- this is why backtest win-rate and model
+    # success-precision can diverge.
+    assert result.forward_return > 0
 
 
 def test_same_day_ambiguous_touch_is_conservatively_a_failure(proxy, price_paths):

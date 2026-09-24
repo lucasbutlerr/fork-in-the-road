@@ -229,6 +229,7 @@ class DatasetBuilder:
                 out_row["label"] = label_result.outcome
                 out_row["trigger_reason"] = label_result.trigger_reason
                 out_row["forward_return"] = label_result.forward_return
+                out_row["trading_days_held"] = label_result.trading_days_held
                 rows.append(out_row)
 
                 if label_result.outcome == SUCCESS:

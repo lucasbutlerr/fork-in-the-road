@@ -51,6 +51,7 @@ class TradeRecord:
     equity_before: float
     equity_after: float
     pnl: float
+    trading_days_held: int | None = None
 
 
 @dataclass
@@ -67,6 +68,7 @@ class BacktestReport:
     average_loss: float  # mean forward_return among losing trades (a negative number)
     max_drawdown: float  # largest peak-to-trough decline in the equity curve, as a fraction
     sharpe_like_ratio: float  # see docstring below -- NOT a standard annualized Sharpe ratio
+    average_holding_days: float = float("nan")  # mean trading_days_held across trades that have it
     equity_curve: list[float] = field(default_factory=list)  # starts with starting_equity, one value per trade after
     trades: list[TradeRecord] = field(default_factory=list)
 
@@ -99,6 +101,11 @@ class BacktestSimulator:
                 "date": pd.to_datetime(test_df[date_column]).to_numpy(),
                 "predicted_probability": probs,
                 "forward_return": test_df["forward_return"].to_numpy(dtype=float),
+                "trading_days_held": (
+                    test_df["trading_days_held"].to_numpy()
+                    if "trading_days_held" in test_df.columns
+                    else np.full(len(test_df), np.nan)
+                ),
             }
         )
         # Chronological order is what makes this a real simulation of
@@ -134,6 +141,9 @@ class BacktestSimulator:
                     equity_before=equity_before,
                     equity_after=equity,
                     pnl=equity - equity_before,
+                    trading_days_held=(
+                        int(row.trading_days_held) if pd.notna(row.trading_days_held) else None
+                    ),
                 )
             )
 
@@ -160,6 +170,9 @@ class BacktestSimulator:
             if std > 0:
                 sharpe_like = float(np.mean(per_trade_portfolio_returns)) / std
 
+        holding_days = [t.trading_days_held for t in trades if t.trading_days_held is not None]
+        average_holding_days = float(np.mean(holding_days)) if holding_days else float("nan")
+
         return BacktestReport(
             starting_equity=starting_equity,
             ending_equity=ending_equity,
@@ -173,6 +186,7 @@ class BacktestSimulator:
             average_loss=float(np.mean([t.forward_return for t in losses])) if losses else float("nan"),
             max_drawdown=BacktestSimulator._max_drawdown(equity_curve),
             sharpe_like_ratio=sharpe_like,
+            average_holding_days=average_holding_days,
             equity_curve=equity_curve,
             trades=trades,
         )
@@ -206,6 +220,8 @@ def format_backtest_report(report: BacktestReport, max_trades_shown: int = 20) -
         f"Win rate: {report.win_rate:.1%}   ({report.win_count} wins, {report.loss_count} losses)"
         if report.n_trades else "No trades taken.",
     ]
+    if report.average_holding_days == report.average_holding_days:  # not NaN
+        lines.append(f"Average holding period: {report.average_holding_days:.1f} trading days")
     if report.win_count:
         lines.append(f"Average win (underlying stock return, not portfolio %):  {report.average_win:+.2%}")
     if report.loss_count:

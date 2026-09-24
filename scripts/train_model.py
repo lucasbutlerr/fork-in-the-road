@@ -21,6 +21,8 @@ installed (`pip install xgboost`, or via the project's [dev] extra).
 from __future__ import annotations
 
 import argparse
+
+from scripts._config_defaults import resolve_config_default
 import logging
 from pathlib import Path
 
@@ -42,7 +44,7 @@ def main() -> None:
         default="data/evaluations/predictions.csv",
         help="Only used with --test. Where to write row-level predictions. Pass '' to skip.",
     )
-    parser.add_argument("--model-config", default="config/model.yaml")
+    parser.add_argument("--model-config", default=resolve_config_default("model"))
     parser.add_argument("--output-dir", default="data/models")
     parser.add_argument("--model-name", default=None, help="Base filename (default: model_<timestamp>)")
     parser.add_argument("-v", "--verbose", action="store_true")

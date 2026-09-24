@@ -178,6 +178,39 @@ def test_best_trial_is_selectable_from_the_study(tmp_cache_dir):
     assert study.best_params == study.best_trial.params
 
 
+def test_suggested_feature_columns_never_include_post_outcome_metadata(tmp_cache_dir):
+    """Regression test for a real label-leakage bug: _suggest_feature_columns
+    used to keep its own hardcoded non_feature_columns set that didn't
+    include trading_days_held (added to DatasetBuilder's output after this
+    method was written), so it silently let a post-outcome column through
+    as a trainable feature whenever feature_groups was configured. It now
+    reuses fitr.modeling.trainer.NON_FEATURE_COLUMNS, the same canonical
+    set the trainer's own "auto" feature selection uses."""
+    objective, _ = make_objective(tmp_cache_dir, n_trials=1)
+
+    tuning_df = pd.DataFrame(
+        {
+            "ticker": ["T001", "T002"],
+            "date": pd.to_datetime(["2023-01-03", "2023-01-04"]),
+            "label": ["SUCCESS", "FAILURE"],
+            "trigger_reason": ["target_hit", "stop_hit"],
+            "forward_return": [0.08, -0.04],
+            "trading_days_held": [4, 9],
+            "feat_a": [1.0, 2.0],
+            "rsi_14": [50.0, 60.0],
+            "macd_value": [0.1, -0.1],
+        }
+    )
+
+    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=0))
+    trial = study.ask()
+    feature_columns = objective._suggest_feature_columns(trial, tuning_df)
+
+    assert feature_columns != "auto"  # feature_groups is configured in make_tuning_config
+    for post_outcome_column in ("trading_days_held", "trigger_reason", "forward_return", "label", "ticker", "date"):
+        assert post_outcome_column not in feature_columns
+
+
 def test_scores_are_ev_shaped_not_precision_shaped():
     # A raw precision score is bounded in [0, 1] (or GATED_SCORE). An EV
     # score is NOT -- it's a return, and can legitimately be negative for

@@ -41,6 +41,8 @@ trimmed universe file first to sanity-check before a full run.
 from __future__ import annotations
 
 import argparse
+
+from scripts._config_defaults import resolve_config_default
 import logging
 
 from fitr.config_schemas.features_schema import FeaturesConfig
@@ -61,9 +63,9 @@ def main() -> None:
     parser.add_argument("--end", required=True, help="End of the historical scan range, e.g. 2024-12-31")
     parser.add_argument("--split-date", required=True, help="Rows before this date -> train.csv, on/after -> test.csv")
     parser.add_argument("--universe", default="config/universe.txt")
-    parser.add_argument("--scanning-config", default="config/scanning_criteria.yaml")
-    parser.add_argument("--features-config", default="config/features.yaml")
-    parser.add_argument("--labeling-config", default="config/labeling.yaml")
+    parser.add_argument("--scanning-config", default=resolve_config_default("scanning_criteria"))
+    parser.add_argument("--features-config", default=resolve_config_default("features"))
+    parser.add_argument("--labeling-config", default=resolve_config_default("labeling"))
     parser.add_argument(
         "--cooldown-days", type=int, default=5, help="Per-ticker cooldown in trading days (default 5, ~1 week)"
     )

@@ -51,6 +51,25 @@ def test_equity_curve_matches_hand_calc():
     assert report.ending_equity == pytest.approx(103_504.5)
     assert report.total_return == pytest.approx(0.035045)
     assert report.equity_curve == pytest.approx([100_000, 102_000, 100_980, 103_504.5])
+    # test_df has no trading_days_held column -- backward-compat path,
+    # report field is present but NaN rather than raising.
+    assert report.average_holding_days != report.average_holding_days  # NaN
+
+
+def test_average_holding_days_computed_from_trading_days_held_column():
+    df = pd.DataFrame(
+        {
+            "ticker": ["A", "B", "C"],
+            "date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+            "forward_return": [0.08, -0.04, 0.10],
+            "trading_days_held": [3, 9, 6],
+        }
+    )
+    model = FakeTrainedModel(probs=[0.9, 0.9, 0.9])
+    report = BacktestSimulator(make_sizer()).run(model, df, threshold=0.5, starting_equity=100_000)
+
+    assert report.average_holding_days == pytest.approx(6.0)
+    assert [t.trading_days_held for t in report.trades] == [3, 9, 6]
 
 
 def test_win_loss_counts_and_averages():

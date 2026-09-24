@@ -52,19 +52,33 @@ from fitr.labeling.labeler import FAILURE, SUCCESS
 
 logger = logging.getLogger(__name__)
 
-_NON_FEATURE_COLUMNS = {
+NON_FEATURE_COLUMNS = {
     "ticker",
-    # trigger_reason and forward_return are DatasetBuilder metadata about
-    # HOW a row was labeled (added for future return-aware analysis), not
-    # predictive inputs -- forward_return in particular directly encodes
-    # the outcome being predicted, so including it as a feature would be
-    # severe label leakage (the model would trivially "predict" success
-    # by reading off its own future answer). date_col and label_col are
-    # also excluded, handled separately below since their column names
-    # are configurable.
+    # trigger_reason, forward_return, and trading_days_held are
+    # DatasetBuilder metadata about HOW a row was labeled (added for
+    # future return-aware analysis), not predictive inputs --
+    # forward_return in particular directly encodes the outcome being
+    # predicted, and trading_days_held is only known once the outcome has
+    # played out, so including either as a feature would be severe label
+    # leakage (the model would trivially "predict" success by reading off
+    # its own future answer). date_col and label_col are also excluded,
+    # handled separately below since their column names are configurable.
+    #
+    # This is the single canonical source of truth for "post-outcome"
+    # columns -- anything else that consumes a built dataset (e.g.
+    # fitr.tuning.objective, which builds its own feature_columns list
+    # for XGBoost rather than going through _resolve_feature_columns
+    # below) MUST import and reuse this set rather than keeping a
+    # separate hardcoded copy that can silently drift out of sync
+    # whenever a new metadata column is added here.
     "trigger_reason",
     "forward_return",
+    "trading_days_held",
 }
+
+# Backwards-compatible alias for any external code still importing the
+# old private name.
+_NON_FEATURE_COLUMNS = NON_FEATURE_COLUMNS
 
 
 @dataclass
@@ -169,7 +183,7 @@ class ModelTrainer:
             if missing:
                 raise ValueError(f"feature_columns references column(s) not present in the training data: {sorted(missing)}")
             return list(self._config.feature_columns)
-        excluded = _NON_FEATURE_COLUMNS | {date_column, self._config.label_column}
+        excluded = NON_FEATURE_COLUMNS | {date_column, self._config.label_column}
         return [c for c in df.columns if c not in excluded]
 
     def _encode_labels(self, series: pd.Series) -> pd.Series:
