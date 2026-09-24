@@ -1,5 +1,8 @@
-# fork-in-the-road
+# Fork in the Road
 *At the heart of every machine learning algorithm is a binary choice. One fork in the road can make the difference between a successful model and noise...*
+
+![GitHub Actions](https://img.shields.io/badge/github%20actions-%232671E5.svg?style=for-the-badge&logo=githubactions&logoColor=white)
+![Python](https://img.shields.io/badge/python-%233670A0.svg?style=for-the-badge&logo=python&logoColor=ffdd54)
 
 Welcome to Fork in the Road!
 This software suite is a config-driven machine learning pipeline that scans US equities for technical breakout setups, predicts whether each one will hit a profit target before a stop loss, and simulates the resulting P&L.
